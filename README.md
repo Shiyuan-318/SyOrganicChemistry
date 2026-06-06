@@ -47,4 +47,3 @@ npm run electron:build
 - 2D 分子构建与展示
 - 118 个元素 + 21 种官能团
 - 智能成键与化学操作
-- Windows 便携版 exe 打包
