@@ -11,13 +11,13 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<'2d' | '3d' | 'split'>('split');
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[#0a0a0a] overflow-hidden">
+    <div className="h-screen w-screen flex flex-col bg-chem-bg overflow-hidden">
       {/* 顶部标题栏 */}
-      <header className="flex items-center justify-between px-4 py-2 bg-[#0d0d1a]/80 backdrop-blur-xl border-b border-[#00ff88]/10 z-50">
+      <header className="flex items-center justify-between px-4 py-2 bg-chem-panel/80 backdrop-blur-xl border-b border-chem-accent/10 z-50">
         <div className="flex items-center gap-2">
-          <FlaskConical size={20} className="text-[#00ff88]" />
+          <FlaskConical size={20} className="text-chem-accent" />
           <h1 className="text-sm font-['Orbitron'] tracking-[0.2em] text-white">
-            Sy <span className="text-[#00ff88]">Organic Chemistry</span>
+            Sy <span className="text-chem-accent">Organic Chemistry</span>
           </h1>
         </div>
 
@@ -27,7 +27,7 @@ export default function Home() {
             onClick={() => setViewMode('2d')}
             className={`p-1.5 rounded-lg transition-all ${
               viewMode === '2d'
-                ? 'bg-[#00ff88]/20 text-[#00ff88]'
+                ? 'bg-chem-accent/20 text-chem-accent'
                 : 'text-gray-500 hover:text-white'
             }`}
             title="2D编辑"
@@ -38,7 +38,7 @@ export default function Home() {
             onClick={() => setViewMode('split')}
             className={`p-1.5 rounded-lg transition-all ${
               viewMode === 'split'
-                ? 'bg-[#00ff88]/20 text-[#00ff88]'
+                ? 'bg-chem-accent/20 text-chem-accent'
                 : 'text-gray-500 hover:text-white'
             }`}
             title="分屏模式"
@@ -49,7 +49,7 @@ export default function Home() {
             onClick={() => setViewMode('3d')}
             className={`p-1.5 rounded-lg transition-all ${
               viewMode === '3d'
-                ? 'bg-[#00ff88]/20 text-[#00ff88]'
+                ? 'bg-chem-accent/20 text-chem-accent'
                 : 'text-gray-500 hover:text-white'
             }`}
             title="3D预览"
@@ -66,13 +66,13 @@ export default function Home() {
 
           <button
             onClick={() => setPanelOpen(!panelOpen)}
-            className="p-2 rounded-lg hover:bg-white/5 text-gray-400 hover:text-[#00ff88] transition-colors md:hidden"
+            className="p-2 rounded-lg hover:bg-white/5 text-gray-400 hover:text-chem-accent transition-colors md:hidden"
           >
             <Menu size={18} />
           </button>
           <button
             onClick={() => setPanelOpen(!panelOpen)}
-            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-[#00ff88] hover:bg-white/5 transition-colors border border-[#2a2a3e] hover:border-[#00ff88]/30"
+            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-chem-accent hover:bg-white/5 transition-colors border border-chem-muted hover:border-chem-accent/30"
           >
             <Menu size={12} />
             <span>元素面板</span>
@@ -88,7 +88,7 @@ export default function Home() {
         </div>
 
         {/* 3D预览区域 */}
-        <div className={`relative border-l border-[#00ff88]/10 ${viewMode === '2d' ? 'hidden' : viewMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
+        <div className={`relative border-l border-chem-accent/10 ${viewMode === '2d' ? 'hidden' : viewMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
           <MoleculeViewer3D />
         </div>
 

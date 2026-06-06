@@ -682,7 +682,7 @@ export default function MoleculeCanvas() {
       {atoms.length === 0 && !pendingElement && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center opacity-30">
-            <p className="text-lg font-['Orbitron'] text-[#00ff88] mb-2">点击或拖拽元素到此处</p>
+            <p className="text-lg font-['Orbitron'] text-chem-accent mb-2">点击或拖拽元素到此处</p>
             <p className="text-sm text-gray-500">Click or drag elements here to build molecules</p>
           </div>
         </div>
@@ -690,7 +690,7 @@ export default function MoleculeCanvas() {
       {/* 待放置元素提示 */}
       {pendingElement && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 pointer-events-none">
-          <div className="px-4 py-1.5 rounded-full bg-[#00ff88]/20 border border-[#00ff88]/40 text-[#00ff88] text-xs font-['Orbitron'] animate-pulse">
+          <div className="px-4 py-1.5 rounded-full bg-chem-accent/20 border border-chem-accent/40 text-chem-accent text-xs font-['Orbitron'] animate-pulse">
             点击画布放置 {pendingElement} · 按 Esc 取消
           </div>
         </div>

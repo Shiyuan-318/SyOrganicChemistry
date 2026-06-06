@@ -87,8 +87,8 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
           fixed md:relative z-40
           top-0 right-0 h-full
           w-72 md:w-80
-          bg-[#0d0d1a]/95 backdrop-blur-xl
-          border-l border-[#00ff88]/10
+          bg-chem-panel/95 backdrop-blur-xl
+          border-l border-chem-accent/10
           transform transition-transform duration-300 ease-out
           ${isOpen ? 'translate-x-0' : 'translate-x-full'}
           flex flex-col
@@ -96,8 +96,8 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
         `}
       >
         {/* 标题栏 */}
-        <div className="flex items-center justify-between p-3 border-b border-[#00ff88]/10">
-          <h2 className="text-sm font-['Orbitron'] text-[#00ff88] tracking-wider">元素面板</h2>
+        <div className="flex items-center justify-between p-3 border-b border-chem-accent/10">
+          <h2 className="text-sm font-['Orbitron'] text-chem-accent tracking-wider">元素面板</h2>
           <button
             onClick={onToggle}
             className="p-1 rounded hover:bg-white/5 text-gray-400 hover:text-white transition-colors"
@@ -122,7 +122,7 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               placeholder="搜索元素 / 官能团..."
-              className="w-full pl-8 pr-3 py-1.5 bg-[#1a1a2e] border border-[#2a2a3e] rounded-lg text-xs text-white placeholder-gray-500 focus:outline-none focus:border-[#00ff88]/50 transition-colors"
+              className="w-full pl-8 pr-3 py-1.5 bg-chem-border border border-chem-muted rounded-lg text-xs text-white placeholder-gray-500 focus:outline-none focus:border-chem-accent/50 transition-colors"
             />
           </div>
         </div>
@@ -139,7 +139,7 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
               <div key={cat} className="mb-2">
                 <button
                   onClick={() => toggleCategory(cat)}
-                  className="flex items-center gap-1.5 w-full py-1.5 text-xs font-medium hover:text-[#00ff88] transition-colors"
+                  className="flex items-center gap-1.5 w-full py-1.5 text-xs font-medium hover:text-chem-accent transition-colors"
                   style={{ color: CATEGORY_COLORS[cat] }}
                 >
                   {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -158,10 +158,10 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
                           onDragStart={e => handleDragStart(e, el.symbol)}
                           onClick={() => handleElementClick(el.symbol)}
                           className={`flex flex-col items-center justify-center p-1 rounded-lg cursor-pointer
-                            bg-[#1a1a2e] border transition-all duration-200 group
+                            bg-chem-border border transition-all duration-200 group
                             ${isActive
-                              ? 'border-[#00ff88] shadow-[0_0_10px_rgba(0,255,136,0.3)]'
-                              : 'border-[#2a2a3e] hover:border-[#00ff88]/50 hover:shadow-[0_0_10px_rgba(0,255,136,0.15)]'
+                              ? 'border-chem-accent shadow-[0_0_10px_rgba(0,255,136,0.3)]'
+                              : 'border-chem-muted hover:border-chem-accent/50 hover:shadow-[0_0_10px_rgba(0,255,136,0.15)]'
                             }
                           `}
                           title={`${el.name} (${el.symbol}) - 原子序数 ${el.atomicNumber} - 点击或拖拽`}
@@ -176,7 +176,7 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
                           >
                             {el.symbol.length > 2 ? el.symbol.slice(0, 2) : el.symbol}
                           </div>
-                          <span className={`text-[8px] truncate w-full text-center transition-colors ${isActive ? 'text-[#00ff88]' : 'text-gray-500 group-hover:text-gray-300'}`}>
+                          <span className={`text-[8px] truncate w-full text-center transition-colors ${isActive ? 'text-chem-accent' : 'text-gray-500 group-hover:text-gray-300'}`}>
                             {el.name}
                           </span>
                         </div>
@@ -211,10 +211,10 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
                       onDragStart={e => handleDragStart(e, group.shorthand)}
                       onClick={() => handleFunctionalGroupClick(group.shorthand)}
                       className={`p-2 rounded-lg cursor-pointer
-                        bg-[#1a1a2e] border transition-all duration-200 group
+                        bg-chem-border border transition-all duration-200 group
                         ${isActive
                           ? 'border-[#ff79c6] shadow-[0_0_10px_rgba(255,121,198,0.3)]'
-                          : 'border-[#2a2a3e] hover:border-[#ff79c6]/50 hover:shadow-[0_0_10px_rgba(255,121,198,0.15)]'
+                          : 'border-chem-muted hover:border-[#ff79c6]/50 hover:shadow-[0_0_10px_rgba(255,121,198,0.15)]'
                         }
                       `}
                       title={`${group.name} - ${group.description} - 点击或拖拽`}
@@ -243,7 +243,7 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
         </div>
 
         {/* 图例 */}
-        <div className="p-3 border-t border-[#00ff88]/10">
+        <div className="p-3 border-t border-chem-accent/10">
           <h3 className="text-[10px] font-['Orbitron'] text-gray-400 mb-2 tracking-wider">元素图例</h3>
           <div className="grid grid-cols-4 gap-1">
             {['H', 'C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'Fe', 'Na'].map(sym => {

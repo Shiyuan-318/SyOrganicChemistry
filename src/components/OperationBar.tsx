@@ -18,7 +18,7 @@ export default function OperationBar() {
   const atoms = useChemStore(s => s.atoms);
 
   return (
-    <div className="bg-[#0d0d1a]/90 backdrop-blur-xl border-t border-[#00ff88]/10 px-4 py-2.5">
+    <div className="bg-chem-panel/90 backdrop-blur-xl border-t border-chem-accent/10 px-4 py-2.5">
       <div className="flex items-center gap-2 overflow-x-auto scrollbar-none">
         <span className="text-[10px] text-gray-500 font-['Orbitron'] tracking-wider flex-shrink-0 mr-1">操作</span>
 
@@ -33,7 +33,7 @@ export default function OperationBar() {
                 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
                 border transition-all duration-200 flex-shrink-0
                 ${atoms.length === 0
-                  ? 'border-[#2a2a3e] text-gray-600 cursor-not-allowed opacity-40'
+                  ? 'border-chem-muted text-gray-600 cursor-not-allowed opacity-40'
                   : 'border-transparent'
                 }
               `}
@@ -61,7 +61,7 @@ export default function OperationBar() {
           );
         })}
 
-        <div className="w-px h-5 bg-[#2a2a3e] flex-shrink-0 mx-1" />
+        <div className="w-px h-5 bg-chem-muted flex-shrink-0 mx-1" />
 
         <button
           onClick={clearCanvas}
@@ -70,7 +70,7 @@ export default function OperationBar() {
             flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium
             border transition-all duration-200 flex-shrink-0
             ${atoms.length === 0
-              ? 'border-[#2a2a3e] text-gray-600 cursor-not-allowed opacity-40'
+              ? 'border-chem-muted text-gray-600 cursor-not-allowed opacity-40'
               : 'border-red-500/30 text-red-400 hover:bg-red-500/10 hover:border-red-500/60'
             }
           `}

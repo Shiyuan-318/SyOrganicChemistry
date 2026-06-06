@@ -38,18 +38,18 @@ export default function InfoBar() {
   const uniqueElements = new Set(atoms.map(a => a.symbol)).size;
 
   return (
-    <div className="bg-[#0d0d1a]/90 backdrop-blur-xl border-t border-[#00ff88]/10 px-4 py-2.5">
+    <div className="bg-chem-panel/90 backdrop-blur-xl border-t border-chem-accent/10 px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
         {/* 分子式 */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-gray-500 font-['Orbitron'] tracking-wider">分子式</span>
-          <span className="text-sm font-bold text-[#00ff88] font-['Orbitron']">
+          <span className="text-sm font-bold text-chem-accent font-['Orbitron']">
             {formula ? formatFormula(formula) : <span className="text-gray-600">--</span>}
           </span>
         </div>
 
         {/* 分隔线 */}
-        <div className="w-px h-4 bg-[#2a2a3e]" />
+        <div className="w-px h-4 bg-chem-muted" />
 
         {/* 结构简式 */}
         <div className="flex items-center gap-2">
@@ -60,7 +60,7 @@ export default function InfoBar() {
         </div>
 
         {/* 分隔线 */}
-        <div className="w-px h-4 bg-[#2a2a3e]" />
+        <div className="w-px h-4 bg-chem-muted" />
 
         {/* 中文名称 */}
         <div className="flex items-center gap-2">
@@ -71,7 +71,7 @@ export default function InfoBar() {
         </div>
 
         {/* 分隔线 */}
-        <div className="w-px h-4 bg-[#2a2a3e]" />
+        <div className="w-px h-4 bg-chem-muted" />
 
         {/* 统计 */}
         <div className="flex items-center gap-3 text-[10px] text-gray-500">

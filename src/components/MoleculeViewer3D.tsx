@@ -309,7 +309,7 @@ export default function MoleculeViewer3D() {
   // WebGL不可用时显示降级UI
   if (webglError) {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-[#0a0a0a]">
+      <div className="w-full h-full flex items-center justify-center bg-chem-bg">
         <div className="text-center">
           <div className="text-3xl mb-3 opacity-30">🧊</div>
           <p className="text-sm text-gray-500 font-['Orbitron']">WebGL 不可用</p>
@@ -329,7 +329,7 @@ export default function MoleculeViewer3D() {
           onClick={() => setModelType('ballStick')}
           className={`px-3 py-1.5 rounded-lg text-xs font-['Orbitron'] transition-all ${
             modelType === 'ballStick'
-              ? 'bg-[#00ff88]/20 text-[#00ff88] border border-[#00ff88]/40'
+              ? 'bg-chem-accent/20 text-chem-accent border border-chem-accent/40'
               : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white hover:border-white/20'
           }`}
         >
@@ -339,7 +339,7 @@ export default function MoleculeViewer3D() {
           onClick={() => setModelType('spaceFill')}
           className={`px-3 py-1.5 rounded-lg text-xs font-['Orbitron'] transition-all ${
             modelType === 'spaceFill'
-              ? 'bg-[#00ff88]/20 text-[#00ff88] border border-[#00ff88]/40'
+              ? 'bg-chem-accent/20 text-chem-accent border border-chem-accent/40'
               : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white hover:border-white/20'
           }`}
         >
@@ -356,7 +356,7 @@ export default function MoleculeViewer3D() {
       {atoms.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center opacity-30">
-            <p className="text-sm font-['Orbitron'] text-[#00ff88]">在2D画布构建分子后查看3D预览</p>
+            <p className="text-sm font-['Orbitron'] text-chem-accent">在2D画布构建分子后查看3D预览</p>
           </div>
         </div>
       )}
