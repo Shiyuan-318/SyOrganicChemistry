@@ -20,11 +20,27 @@ interface Particle {
   progress?: number;
 }
 
+interface ContextMenuState {
+  x: number;
+  y: number;
+  type: 'atom' | 'bond' | 'empty';
+  targetId: string | null;
+}
+
 export default function MoleculeCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isOverDeleteZone, setIsOverDeleteZone] = useState(false);
+
+  // v1.3.0 toggle states
+  const [showLewis, setShowLewis] = useState(false);
+  const [showOxidation, setShowOxidation] = useState(false);
+  const [showRings, setShowRings] = useState(false);
+  const [smilesInputOpen, setSmilesInputOpen] = useState(false);
+  const [smilesInput, setSmilesInput] = useState('');
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [copyPasteFeedback, setCopyPasteFeedback] = useState<string | null>(null);
 
   const atoms = useChemStore(s => s.atoms);
   const bonds = useChemStore(s => s.bonds);
@@ -37,6 +53,7 @@ export default function MoleculeCanvas() {
   const pendingElement = useChemStore(s => s.pendingElement);
   const getHybridization = useChemStore(s => s.getHybridization);
   const getChiralCenters = useChemStore(s => s.getChiralCenters);
+  const theme = useChemStore(s => s.theme);
 
   const addAtom = useChemStore(s => s.addAtom);
   const addFunctionalGroup = useChemStore(s => s.addFunctionalGroup);
@@ -63,6 +80,19 @@ export default function MoleculeCanvas() {
   // Particles for reaction animation
   const particlesRef = useRef<Particle[]>([]);
   const lastEffectTimestamp = useRef<number>(0);
+
+  // Theme colors
+  const isLight = theme === 'light';
+  const bgColor = isLight ? '#f5f5f5' : '#0a0a0a';
+  const gridColor = isLight ? 'rgba(0, 0, 0, 0.06)' : 'rgba(0, 255, 136, 0.05)';
+  const bondColor = isLight ? 'rgba(60, 60, 60, 0.85)' : 'rgba(200, 200, 200, 0.8)';
+  const textColor = isLight ? '#222222' : '#ffffff';
+  const overlayBtnBg = isLight ? 'rgba(0, 0, 0, 0.06)' : 'rgba(255, 255, 255, 0.08)';
+  const overlayBtnBorder = isLight ? 'rgba(0, 0, 0, 0.15)' : 'rgba(255, 255, 255, 0.2)';
+  const overlayBtnText = isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.6)';
+  const overlayBtnActiveBg = isLight ? 'rgba(0, 120, 80, 0.15)' : 'rgba(0, 255, 136, 0.15)';
+  const overlayBtnActiveBorder = isLight ? 'rgba(0, 120, 80, 0.4)' : 'rgba(0, 255, 136, 0.4)';
+  const overlayBtnActiveText = isLight ? 'rgba(0, 120, 80, 0.9)' : 'rgba(0, 255, 136, 0.9)';
 
   // ===== Export PNG =====
   const exportPNG = useCallback(() => {
@@ -92,7 +122,7 @@ export default function MoleculeCanvas() {
     if (!ctx) return;
 
     ctx.scale(2, 2);
-    ctx.fillStyle = '#0a0a0a';
+    ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, molWidth, molHeight);
 
     const offsetX = -minX + padding;
@@ -115,10 +145,34 @@ export default function MoleculeCanvas() {
       const nx = -dy / len;
       const ny = dx / len;
 
-      ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)';
+      ctx.strokeStyle = bondColor;
       ctx.lineWidth = 2;
 
-      if (bond.type === 1) {
+      if (bond.stereo === 'wedge') {
+        const wedgeWidth = 8;
+        ctx.fillStyle = bondColor;
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x, fromAtom.y);
+        ctx.lineTo(toAtom.x + nx * wedgeWidth, toAtom.y + ny * wedgeWidth);
+        ctx.lineTo(toAtom.x - nx * wedgeWidth, toAtom.y - ny * wedgeWidth);
+        ctx.closePath();
+        ctx.fill();
+      } else if (bond.stereo === 'dash') {
+        const numLines = 7;
+        const wedgeWidth = 8;
+        ctx.strokeStyle = bondColor;
+        ctx.lineWidth = 1.5;
+        for (let i = 1; i <= numLines; i++) {
+          const t = i / (numLines + 1);
+          const px = fromAtom.x + dx * t;
+          const py = fromAtom.y + dy * t;
+          const halfW = wedgeWidth * t;
+          ctx.beginPath();
+          ctx.moveTo(px + nx * halfW, py + ny * halfW);
+          ctx.lineTo(px - nx * halfW, py - ny * halfW);
+          ctx.stroke();
+        }
+      } else if (bond.type === 1) {
         ctx.beginPath();
         ctx.moveTo(fromAtom.x, fromAtom.y);
         ctx.lineTo(toAtom.x, toAtom.y);
@@ -186,7 +240,7 @@ export default function MoleculeCanvas() {
     link.download = 'molecule.png';
     link.href = dataURL;
     link.click();
-  }, []);
+  }, [bgColor, bondColor]);
 
   // ===== Export SVG =====
   const exportSVG = useCallback(() => {
@@ -210,7 +264,7 @@ export default function MoleculeCanvas() {
 
     const lines: string[] = [];
     lines.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`);
-    lines.push(`<rect width="${svgW}" height="${svgH}" fill="#0a0a0a"/>`);
+    lines.push(`<rect width="${svgW}" height="${svgH}" fill="${bgColor}"/>`);
     lines.push(`<g transform="translate(${offsetX},${offsetY})">`);
 
     // Bonds
@@ -226,10 +280,23 @@ export default function MoleculeCanvas() {
 
       const nx = -dy / len;
       const ny = dx / len;
-      const stroke = 'rgba(200, 200, 200, 0.8)';
+      const stroke = bondColor;
       const sw = 2;
 
-      if (bond.type === 1) {
+      if (bond.stereo === 'wedge') {
+        const ww = 8;
+        lines.push(`<polygon points="${fromAtom.x},${fromAtom.y} ${toAtom.x + nx * ww},${toAtom.y + ny * ww} ${toAtom.x - nx * ww},${toAtom.y - ny * ww}" fill="${stroke}"/>`);
+      } else if (bond.stereo === 'dash') {
+        const numLines = 7;
+        const ww = 8;
+        for (let i = 1; i <= numLines; i++) {
+          const t = i / (numLines + 1);
+          const px = fromAtom.x + dx * t;
+          const py = fromAtom.y + dy * t;
+          const halfW = ww * t;
+          lines.push(`<line x1="${px + nx * halfW}" y1="${py + ny * halfW}" x2="${px - nx * halfW}" y2="${py - ny * halfW}" stroke="${stroke}" stroke-width="1.5"/>`);
+        }
+      } else if (bond.type === 1) {
         lines.push(`<line x1="${fromAtom.x}" y1="${fromAtom.y}" x2="${toAtom.x}" y2="${toAtom.y}" stroke="${stroke}" stroke-width="${sw}"/>`);
       } else if (bond.type === 2) {
         const off = 4;
@@ -248,10 +315,10 @@ export default function MoleculeCanvas() {
       const element = ELEMENT_MAP.get(atom.symbol);
       if (!element) continue;
       const r = ATOM_RADIUS;
-      const textColor = getContrastColor(element.color);
+      const textColorVal = getContrastColor(element.color);
       const fontSize = atom.symbol.length > 1 ? 11 : 14;
       lines.push(`<circle cx="${atom.x}" cy="${atom.y}" r="${r}" fill="${element.color}" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>`);
-      lines.push(`<text x="${atom.x}" y="${atom.y}" text-anchor="middle" dominant-baseline="central" fill="${textColor}" font-size="${fontSize}" font-weight="bold" font-family="Orbitron, sans-serif">${atom.symbol}</text>`);
+      lines.push(`<text x="${atom.x}" y="${atom.y}" text-anchor="middle" dominant-baseline="central" fill="${textColorVal}" font-size="${fontSize}" font-weight="bold" font-family="Orbitron, sans-serif">${atom.symbol}</text>`);
     }
 
     lines.push('</g>');
@@ -265,7 +332,7 @@ export default function MoleculeCanvas() {
     link.href = url;
     link.click();
     URL.revokeObjectURL(url);
-  }, []);
+  }, [bgColor, bondColor]);
 
   // ===== Spawn particles for reaction animation =====
   const spawnParticles = useCallback((type: string) => {
@@ -356,7 +423,7 @@ export default function MoleculeCanvas() {
     ctx.scale(dpr, dpr);
 
     // 背景
-    ctx.fillStyle = '#0a0a0a';
+    ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, w, h);
 
     // 拖拽悬停高亮
@@ -371,7 +438,7 @@ export default function MoleculeCanvas() {
     ctx.scale(canvasScale, canvasScale);
 
     const gridSize = 40;
-    ctx.strokeStyle = 'rgba(0, 255, 136, 0.05)';
+    ctx.strokeStyle = gridColor;
     ctx.lineWidth = 0.5;
     const startX = Math.floor(-canvasOffset.x / canvasScale / gridSize) * gridSize - gridSize;
     const startY = Math.floor(-canvasOffset.y / canvasScale / gridSize) * gridSize - gridSize;
@@ -519,6 +586,34 @@ export default function MoleculeCanvas() {
     // Get chiral centers
     const chiralCenterIds = getChiralCenters();
 
+    // ===== Ring highlighting =====
+    if (showRings) {
+      const rings = useChemStore.getState().getRings();
+      const ringColors = [
+        'rgba(0, 200, 255, 0.08)',
+        'rgba(255, 200, 0, 0.08)',
+        'rgba(200, 0, 255, 0.08)',
+        'rgba(0, 255, 100, 0.08)',
+        'rgba(255, 100, 0, 0.08)',
+        'rgba(100, 0, 255, 0.08)',
+      ];
+      rings.forEach((ring, ri) => {
+        const ringAtoms = ring.map(id => atoms.find(a => a.id === id)).filter(Boolean) as typeof atoms;
+        if (ringAtoms.length < 3) return;
+        // Draw a filled polygon for the ring
+        ctx.save();
+        ctx.fillStyle = ringColors[ri % ringColors.length];
+        ctx.beginPath();
+        ctx.moveTo(ringAtoms[0].x, ringAtoms[0].y);
+        for (let i = 1; i < ringAtoms.length; i++) {
+          ctx.lineTo(ringAtoms[i].x, ringAtoms[i].y);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
     // 绘制化学键
     for (const bond of bonds) {
       const fromAtom = atoms.find(a => a.id === bond.from);
@@ -534,10 +629,36 @@ export default function MoleculeCanvas() {
       const nx = -dy / len;
       const ny = dx / len;
 
-      ctx.strokeStyle = isSelected ? '#00ff88' : 'rgba(200, 200, 200, 0.8)';
+      ctx.strokeStyle = isSelected ? '#00ff88' : bondColor;
       ctx.lineWidth = isSelected ? 3 : 2;
 
-      if (bond.type === 1) {
+      if (bond.stereo === 'wedge') {
+        // Wedge bond: filled triangle from fromAtom (narrow) to toAtom (wide)
+        const wedgeWidth = 8;
+        ctx.fillStyle = isSelected ? '#00ff88' : bondColor;
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x, fromAtom.y);
+        ctx.lineTo(toAtom.x + nx * wedgeWidth, toAtom.y + ny * wedgeWidth);
+        ctx.lineTo(toAtom.x - nx * wedgeWidth, toAtom.y - ny * wedgeWidth);
+        ctx.closePath();
+        ctx.fill();
+      } else if (bond.stereo === 'dash') {
+        // Dash bond: hashed wedge (series of short parallel lines)
+        const numLines = 7;
+        const wedgeWidth = 8;
+        ctx.strokeStyle = isSelected ? '#00ff88' : bondColor;
+        ctx.lineWidth = 1.5;
+        for (let i = 1; i <= numLines; i++) {
+          const t = i / (numLines + 1);
+          const px = fromAtom.x + dx * t;
+          const py = fromAtom.y + dy * t;
+          const halfW = wedgeWidth * t;
+          ctx.beginPath();
+          ctx.moveTo(px + nx * halfW, py + ny * halfW);
+          ctx.lineTo(px - nx * halfW, py - ny * halfW);
+          ctx.stroke();
+        }
+      } else if (bond.type === 1) {
         ctx.beginPath();
         ctx.moveTo(fromAtom.x, fromAtom.y);
         ctx.lineTo(toAtom.x, toAtom.y);
@@ -614,6 +735,42 @@ export default function MoleculeCanvas() {
       }
     }
 
+    // ===== Lewis structure dots =====
+    if (showLewis) {
+      const lewisData = useChemStore.getState().getLewisStructure();
+      for (const lewis of lewisData) {
+        const atom = atoms.find(a => a.id === lewis.atomId);
+        if (!atom) continue;
+        const lonePairs = lewis.lonePairs;
+        // Position dots around the atom: top, bottom, left, right
+        // Each lone pair = 2 dots, slightly offset
+        const dotRadius = 2;
+        const dotDistance = ATOM_RADIUS + 8;
+        const dotOffset = 4; // offset between two dots in a pair
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+
+        const positions: { cx: number; cy: number; perpX: number; perpY: number }[] = [
+          { cx: 0, cy: -dotDistance, perpX: 1, perpY: 0 },  // top
+          { cx: 0, cy: dotDistance, perpX: 1, perpY: 0 },   // bottom
+          { cx: -dotDistance, cy: 0, perpX: 0, perpY: 1 },  // left
+          { cx: dotDistance, cy: 0, perpX: 0, perpY: 1 },   // right
+        ];
+
+        for (let i = 0; i < Math.min(lonePairs, 4); i++) {
+          const pos = positions[i];
+          const baseX = atom.x + pos.cx;
+          const baseY = atom.y + pos.cy;
+          // Draw 2 dots per lone pair, offset perpendicular
+          ctx.beginPath();
+          ctx.arc(baseX - pos.perpX * dotOffset, baseY - pos.perpY * dotOffset, dotRadius, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(baseX + pos.perpX * dotOffset, baseY + pos.perpY * dotOffset, dotRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
     for (const atom of atoms) {
       const element = ELEMENT_MAP.get(atom.symbol);
       if (!element) continue;
@@ -659,11 +816,39 @@ export default function MoleculeCanvas() {
       ctx.lineWidth = isSelected ? 2.5 : 1;
       ctx.stroke();
 
+      // ===== Formal charge label =====
+      const formalCharge = useChemStore.getState().getFormalCharge(atom.id);
+      let chargeLabel = '';
+      if (formalCharge !== 0) {
+        if (formalCharge === 1) chargeLabel = '⁺';
+        else if (formalCharge === -1) chargeLabel = '⁻';
+        else if (formalCharge > 1) chargeLabel = `${formalCharge}⁺`;
+        else if (formalCharge < -1) chargeLabel = `${Math.abs(formalCharge)}⁻`;
+      }
+
       ctx.fillStyle = isLongPressed ? '#ffffff' : getContrastColor(element.color);
       ctx.font = `bold ${atom.symbol.length > 1 ? 11 : 14}px Orbitron, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(atom.symbol, atom.x, atom.y);
+      const symbolText = atom.symbol + chargeLabel;
+      ctx.fillText(symbolText, atom.x, atom.y);
+
+      // ===== Oxidation state label =====
+      if (showOxidation) {
+        const oxState = useChemStore.getState().getOxidationState(atom.id);
+        if (oxState !== 0) {
+          const oxLabel = oxState > 0 ? `+${oxState}` : `${oxState}`;
+          ctx.save();
+          ctx.font = 'bold 9px Orbitron, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillStyle = '#ff8800';
+          ctx.shadowColor = 'rgba(255, 136, 0, 0.4)';
+          ctx.shadowBlur = 3;
+          ctx.fillText(oxLabel, atom.x, atom.y - radius - 2);
+          ctx.restore();
+        }
+      }
 
       // ===== Hybridization label for selected atom =====
       if (isSelected) {
@@ -738,15 +923,15 @@ export default function MoleculeCanvas() {
     // PNG export button
     const pngBtnX = w - btnSize - btnMargin;
     ctx.save();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.fillStyle = overlayBtnBg;
+    ctx.strokeStyle = overlayBtnBorder;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(pngBtnX, btnY, btnSize, btnSize, 6);
     ctx.fill();
     ctx.stroke();
     // Camera/image icon
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.fillStyle = overlayBtnText;
     ctx.font = '16px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -756,22 +941,35 @@ export default function MoleculeCanvas() {
     // SVG export button
     const svgBtnX = w - btnSize * 2 - btnMargin * 2;
     ctx.save();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.fillStyle = overlayBtnBg;
+    ctx.strokeStyle = overlayBtnBorder;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(svgBtnX, btnY, btnSize, btnSize, 6);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.fillStyle = overlayBtnText;
     ctx.font = 'bold 10px Orbitron, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('SVG', svgBtnX + btnSize / 2, btnY + btnSize / 2);
     ctx.restore();
 
+    // ===== Copy/Paste feedback =====
+    if (copyPasteFeedback) {
+      ctx.save();
+      ctx.font = 'bold 14px Orbitron, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(0, 255, 136, 0.8)';
+      ctx.shadowColor = 'rgba(0, 255, 136, 0.5)';
+      ctx.shadowBlur = 10;
+      ctx.fillText(copyPasteFeedback, w / 2, h / 2 - 40);
+      ctx.restore();
+    }
+
     ctx.restore();
-  }, [atoms, bonds, canvasOffset, canvasScale, selectedAtomId, selectedBondId, draggingAtomId, operationEffect, isDragOver, isOverDeleteZone, getHybridization, getChiralCenters, longPressActive, longPressTargetId, spawnParticles]);
+  }, [atoms, bonds, canvasOffset, canvasScale, selectedAtomId, selectedBondId, draggingAtomId, operationEffect, isDragOver, isOverDeleteZone, getHybridization, getChiralCenters, longPressActive, longPressTargetId, spawnParticles, showLewis, showOxidation, showRings, bgColor, gridColor, bondColor, overlayBtnBg, overlayBtnBorder, overlayBtnText, copyPasteFeedback]);
 
   function lightenColor(hex: string, amount: number): string {
     const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
@@ -910,6 +1108,11 @@ export default function MoleculeCanvas() {
 
   // 鼠标事件处理
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Close context menu on any click
+    if (contextMenu) {
+      setContextMenu(null);
+    }
+
     // Check export buttons first
     const exportBtn = isOnExportButton(e.clientX, e.clientY);
     if (exportBtn === 'png') {
@@ -946,7 +1149,7 @@ export default function MoleculeCanvas() {
         offsetStart.current = { ...canvasOffset };
       }
     }
-  }, [pendingElement, placeElement, setPendingElement, screenToCanvas, hitTestAtom, hitTestBond, selectAtom, selectBond, setDraggingAtom, canvasOffset, isOnExportButton, exportPNG, exportSVG]);
+  }, [pendingElement, placeElement, setPendingElement, screenToCanvas, hitTestAtom, hitTestBond, selectAtom, selectBond, setDraggingAtom, canvasOffset, isOnExportButton, exportPNG, exportSVG, contextMenu]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (isPanning.current) {
@@ -1009,6 +1212,38 @@ export default function MoleculeCanvas() {
       cycleBondType(hitBond.id);
     }
   }, [screenToCanvas, hitTestBond, cycleBondType, isOnExportButton]);
+
+  // ===== Right-click context menu =====
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+
+    const pos = screenToCanvas(e.clientX, e.clientY);
+    const hitAtom = hitTestAtom(pos.x, pos.y);
+    const hitBond = hitTestBond(pos.x, pos.y);
+
+    if (hitAtom) {
+      setContextMenu({
+        x: e.clientX - (containerRef.current?.getBoundingClientRect().left ?? 0),
+        y: e.clientY - (containerRef.current?.getBoundingClientRect().top ?? 0),
+        type: 'atom',
+        targetId: hitAtom.id,
+      });
+    } else if (hitBond) {
+      setContextMenu({
+        x: e.clientX - (containerRef.current?.getBoundingClientRect().left ?? 0),
+        y: e.clientY - (containerRef.current?.getBoundingClientRect().top ?? 0),
+        type: 'bond',
+        targetId: hitBond.id,
+      });
+    } else {
+      setContextMenu({
+        x: e.clientX - (containerRef.current?.getBoundingClientRect().left ?? 0),
+        y: e.clientY - (containerRef.current?.getBoundingClientRect().top ?? 0),
+        type: 'empty',
+        targetId: null,
+      });
+    }
+  }, [screenToCanvas, hitTestAtom, hitTestBond]);
 
   // 触摸事件处理
   const touchState = useRef<{ lastDist: number; lastCenter: { x: number; y: number } } | null>(null);
@@ -1194,6 +1429,12 @@ export default function MoleculeCanvas() {
     placeElement(data, e.clientX, e.clientY);
   }, [placeElement]);
 
+  // ===== Copy/Paste feedback helper =====
+  const showFeedback = useCallback((msg: string) => {
+    setCopyPasteFeedback(msg);
+    setTimeout(() => setCopyPasteFeedback(null), 800);
+  }, []);
+
   // 键盘快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1208,6 +1449,8 @@ export default function MoleculeCanvas() {
       // Escape 取消待放置元素
       if (e.key === 'Escape') {
         setPendingElement(null);
+        setSmilesInputOpen(false);
+        setContextMenu(null);
       }
       // Ctrl+Z: undo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
@@ -1233,10 +1476,22 @@ export default function MoleculeCanvas() {
         e.preventDefault();
         exportPNG();
       }
+      // Ctrl+C: copy selection
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        e.preventDefault();
+        useChemStore.getState().copySelection();
+        showFeedback('已复制');
+      }
+      // Ctrl+V: paste selection
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        e.preventDefault();
+        useChemStore.getState().pasteSelection(50, 50);
+        showFeedback('已粘贴');
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [removeAtom, setPendingElement, exportPNG]);
+  }, [removeAtom, setPendingElement, exportPNG, showFeedback]);
 
   // Long press visual feedback
   useEffect(() => {
@@ -1253,10 +1508,77 @@ export default function MoleculeCanvas() {
     return () => clearTimeout(feedbackTimer);
   }, [longPressTargetId]);
 
+  // ===== SMILES import handler =====
+  const handleSmilesSubmit = useCallback(() => {
+    if (smilesInput.trim()) {
+      useChemStore.getState().importSMILES(smilesInput.trim());
+      setSmilesInput('');
+      setSmilesInputOpen(false);
+    }
+  }, [smilesInput]);
+
+  // ===== Context menu action handlers =====
+  const handleContextAction = useCallback((action: string) => {
+    const state = useChemStore.getState();
+    if (contextMenu?.type === 'atom' && contextMenu.targetId) {
+      const atomId = contextMenu.targetId;
+      if (action === 'delete') {
+        state.removeAtom(atomId);
+      } else if (action === 'copy') {
+        state.selectAtom(atomId);
+        state.copySelection();
+        showFeedback('已复制');
+      }
+    } else if (contextMenu?.type === 'bond' && contextMenu.targetId) {
+      const bondId = contextMenu.targetId;
+      if (action === 'cycleType') {
+        state.cycleBondType(bondId);
+      } else if (action === 'normal' || action === 'wedge' || action === 'dash') {
+        state.setBondStereo(bondId, action);
+      }
+    } else if (contextMenu?.type === 'empty') {
+      if (action === 'paste') {
+        state.pasteSelection(50, 50);
+        showFeedback('已粘贴');
+      } else if (action === 'autoLayout') {
+        state.autoLayout();
+      } else if (action === 'fitView') {
+        const container = containerRef.current;
+        if (container) {
+          const rect = container.getBoundingClientRect();
+          state.fitToView(rect.width, rect.height);
+        }
+      }
+    }
+    setContextMenu(null);
+  }, [contextMenu, showFeedback]);
+
+  // ===== Auto layout handler =====
+  const handleAutoLayout = useCallback(() => {
+    useChemStore.getState().autoLayout();
+  }, []);
+
+  // ===== Fit to view handler =====
+  const handleFitToView = useCallback(() => {
+    const container = containerRef.current;
+    if (container) {
+      const rect = container.getBoundingClientRect();
+      useChemStore.getState().fitToView(rect.width, rect.height);
+    }
+  }, []);
+
   // 光标样式
   const cursorClass = pendingElement
     ? 'cursor-crosshair'
     : 'cursor-grab active:cursor-grabbing';
+
+  // Current SMILES for display
+  const currentSMILES = useChemStore(s => s.getSMILES());
+
+  // Context menu data for atom/bond
+  const contextAtomData = contextMenu?.type === 'atom' && contextMenu.targetId
+    ? { charge: useChemStore.getState().getFormalCharge(contextMenu.targetId), oxState: useChemStore.getState().getOxidationState(contextMenu.targetId) }
+    : null;
 
   return (
     <div
@@ -1276,6 +1598,7 @@ export default function MoleculeCanvas() {
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -1297,6 +1620,226 @@ export default function MoleculeCanvas() {
           </div>
         </div>
       )}
+
+      {/* ===== v1.3.0 Overlay Buttons (top-left) ===== */}
+      <div className="absolute top-2 left-2 flex flex-col gap-1.5 z-10">
+        {/* Auto Layout */}
+        <button
+          onClick={handleAutoLayout}
+          className="px-2.5 py-1 rounded text-[11px] font-['Orbitron'] transition-all"
+          style={{
+            background: overlayBtnBg,
+            border: `1px solid ${overlayBtnBorder}`,
+            color: overlayBtnText,
+          }}
+          title="自动布局"
+        >
+          布局
+        </button>
+        {/* Fit to View */}
+        <button
+          onClick={handleFitToView}
+          className="px-2.5 py-1 rounded text-[11px] font-['Orbitron'] transition-all"
+          style={{
+            background: overlayBtnBg,
+            border: `1px solid ${overlayBtnBorder}`,
+            color: overlayBtnText,
+          }}
+          title="适配视图"
+        >
+          适配
+        </button>
+        {/* Lewis toggle */}
+        <button
+          onClick={() => setShowLewis(!showLewis)}
+          className="px-2.5 py-1 rounded text-[11px] font-['Orbitron'] transition-all"
+          style={{
+            background: showLewis ? overlayBtnActiveBg : overlayBtnBg,
+            border: `1px solid ${showLewis ? overlayBtnActiveBorder : overlayBtnBorder}`,
+            color: showLewis ? overlayBtnActiveText : overlayBtnText,
+          }}
+          title="路易斯结构"
+        >
+          路易斯
+        </button>
+        {/* Oxidation state toggle */}
+        <button
+          onClick={() => setShowOxidation(!showOxidation)}
+          className="px-2.5 py-1 rounded text-[11px] font-['Orbitron'] transition-all"
+          style={{
+            background: showOxidation ? overlayBtnActiveBg : overlayBtnBg,
+            border: `1px solid ${showOxidation ? overlayBtnActiveBorder : overlayBtnBorder}`,
+            color: showOxidation ? overlayBtnActiveText : overlayBtnText,
+          }}
+          title="氧化态"
+        >
+          氧化态
+        </button>
+        {/* Ring highlighting toggle */}
+        <button
+          onClick={() => setShowRings(!showRings)}
+          className="px-2.5 py-1 rounded text-[11px] font-['Orbitron'] transition-all"
+          style={{
+            background: showRings ? overlayBtnActiveBg : overlayBtnBg,
+            border: `1px solid ${showRings ? overlayBtnActiveBorder : overlayBtnBorder}`,
+            color: showRings ? overlayBtnActiveText : overlayBtnText,
+          }}
+          title="环高亮"
+        >
+          环
+        </button>
+        {/* SMILES toggle */}
+        <button
+          onClick={() => setSmilesInputOpen(!smilesInputOpen)}
+          className="px-2.5 py-1 rounded text-[11px] font-['Orbitron'] transition-all"
+          style={{
+            background: smilesInputOpen ? overlayBtnActiveBg : overlayBtnBg,
+            border: `1px solid ${smilesInputOpen ? overlayBtnActiveBorder : overlayBtnBorder}`,
+            color: smilesInputOpen ? overlayBtnActiveText : overlayBtnText,
+          }}
+          title="SMILES 导入/导出"
+        >
+          SMILES
+        </button>
+      </div>
+
+      {/* ===== SMILES Input (top-center) ===== */}
+      {smilesInputOpen && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-1.5">
+          <div className="flex items-center gap-1.5">
+            <input
+              type="text"
+              value={smilesInput}
+              onChange={e => setSmilesInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleSmilesSubmit(); }}
+              placeholder="输入 SMILES 后按 Enter 导入"
+              className="px-3 py-1.5 rounded text-xs font-mono w-64 outline-none"
+              style={{
+                background: isLight ? '#ffffff' : 'rgba(255,255,255,0.1)',
+                border: `1px solid ${isLight ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.3)'}`,
+                color: isLight ? '#222' : '#eee',
+              }}
+              autoFocus
+            />
+            <button
+              onClick={handleSmilesSubmit}
+              className="px-2 py-1.5 rounded text-[11px] font-['Orbitron']"
+              style={{
+                background: overlayBtnActiveBg,
+                border: `1px solid ${overlayBtnActiveBorder}`,
+                color: overlayBtnActiveText,
+              }}
+            >
+              导入
+            </button>
+          </div>
+          {currentSMILES && (
+            <div
+              className="px-3 py-1 rounded text-[10px] font-mono select-all max-w-xs truncate"
+              style={{
+                background: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)',
+                border: `1px solid ${isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)'}`,
+                color: isLight ? '#555' : '#aaa',
+              }}
+              title={currentSMILES}
+            >
+              {currentSMILES}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== Right-click Context Menu ===== */}
+      {contextMenu && (
+        <div
+          className="absolute z-30 rounded-lg shadow-xl py-1 min-w-[120px]"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            background: isLight ? '#ffffff' : '#1a1a2e',
+            border: `1px solid ${isLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.15)'}`,
+          }}
+        >
+          {contextMenu.type === 'atom' && (
+            <>
+              <ContextMenuItem
+                label="删除"
+                isLight={isLight}
+                onClick={() => handleContextAction('delete')}
+              />
+              <ContextMenuItem
+                label="复制"
+                isLight={isLight}
+                onClick={() => handleContextAction('copy')}
+              />
+              {contextAtomData && (
+                <>
+                  <ContextMenuItem
+                    label={`形式电荷: ${contextAtomData.charge > 0 ? '+' : ''}${contextAtomData.charge}`}
+                    isLight={isLight}
+                    onClick={() => {}}
+                    disabled
+                  />
+                  <ContextMenuItem
+                    label={`氧化态: ${contextAtomData.oxState > 0 ? '+' : ''}${contextAtomData.oxState}`}
+                    isLight={isLight}
+                    onClick={() => {}}
+                    disabled
+                  />
+                </>
+              )}
+            </>
+          )}
+          {contextMenu.type === 'bond' && (
+            <>
+              <ContextMenuItem
+                label="切换键型"
+                isLight={isLight}
+                onClick={() => handleContextAction('cycleType')}
+              />
+              <div
+                className="my-1"
+                style={{ borderTop: `1px solid ${isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)'}` }}
+              />
+              <ContextMenuItem
+                label="普通键"
+                isLight={isLight}
+                onClick={() => handleContextAction('normal')}
+              />
+              <ContextMenuItem
+                label="楔形键"
+                isLight={isLight}
+                onClick={() => handleContextAction('wedge')}
+              />
+              <ContextMenuItem
+                label="虚线键"
+                isLight={isLight}
+                onClick={() => handleContextAction('dash')}
+              />
+            </>
+          )}
+          {contextMenu.type === 'empty' && (
+            <>
+              <ContextMenuItem
+                label="粘贴"
+                isLight={isLight}
+                onClick={() => handleContextAction('paste')}
+              />
+              <ContextMenuItem
+                label="自动布局"
+                isLight={isLight}
+                onClick={() => handleContextAction('autoLayout')}
+              />
+              <ContextMenuItem
+                label="适配视图"
+                isLight={isLight}
+                onClick={() => handleContextAction('fitView')}
+              />
+            </>
+          )}
+        </div>
+      )}
+
       {/* 删除区域 */}
       <div
         className={`
@@ -1321,5 +1864,35 @@ export default function MoleculeCanvas() {
         </span>
       </div>
     </div>
+  );
+}
+
+// ===== Context Menu Item Component =====
+function ContextMenuItem({ label, isLight, onClick, disabled }: {
+  label: string;
+  isLight: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      className="w-full text-left px-3 py-1.5 text-xs transition-colors"
+      style={{
+        color: disabled
+          ? (isLight ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)')
+          : (isLight ? '#222' : '#ddd'),
+        cursor: disabled ? 'default' : 'pointer',
+        background: 'transparent',
+      }}
+      onMouseEnter={e => {
+        if (!disabled) (e.target as HTMLElement).style.background = isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)';
+      }}
+      onMouseLeave={e => {
+        (e.target as HTMLElement).style.background = 'transparent';
+      }}
+    >
+      {label}
+    </button>
   );
 }

@@ -13,6 +13,7 @@ export interface Bond {
   from: string;
   to: string;
   type: 1 | 2 | 3;
+  stereo?: 'wedge' | 'dash' | 'normal';
 }
 
 export interface OperationEffect {
@@ -89,6 +90,30 @@ interface ChemState {
   getSavedMolecules: () => Molecule[];
   deleteSavedMolecule: (id: string) => void;
   getExportData: () => { atoms: AtomNode[]; bonds: Bond[] };
+
+  // v1.3.0 features
+  getSMILES: () => string;
+  importSMILES: (smiles: string) => void;
+  autoLayout: () => void;
+  fitToView: (canvasWidth: number, canvasHeight: number) => void;
+  getFormalCharge: (atomId: string) => number;
+  getOxidationState: (atomId: string) => number;
+  getRings: () => string[][];
+  getResonanceStructures: () => { atoms: AtomNode[]; bonds: Bond[] }[];
+  getIRPeaks: () => { wavenumber: number; intensity: string; assignment: string }[];
+  getNMRSifts: () => { atomId: string; ppm: number; type: string }[];
+  getPKa: () => { atomId: string; pKa: number; type: string }[];
+  setBondStereo: (id: string, stereo: 'wedge' | 'dash' | 'normal') => void;
+  copySelection: () => void;
+  pasteSelection: (offsetX: number, offsetY: number) => void;
+  getLewisStructure: () => { atomId: string; lonePairs: number; bondingElectrons: number }[];
+  toggleTheme: () => void;
+  setLanguage: (lang: 'zh' | 'en') => void;
+
+  // v1.3.0 state
+  clipboard: { atoms: AtomNode[]; bonds: Bond[] } | null;
+  theme: 'dark' | 'light';
+  language: 'zh' | 'en';
 }
 
 let idCounter = 0;
@@ -118,6 +143,21 @@ const ATOMIC_MASSES: Record<string, number> = {
   Am: 243, Cm: 247, Bk: 247, Cf: 251, Es: 252, Fm: 257, Md: 258, No: 259, Lr: 262,
   Rf: 267, Db: 270, Sg: 271, Bh: 270, Hs: 277, Mt: 276, Ds: 281, Rg: 280, Cn: 285,
   Nh: 284, Fl: 289, Mc: 288, Lv: 293, Ts: 294, Og: 294,
+};
+
+// 价电子数
+const VALENCE_ELECTRONS: Record<string, number> = {
+  H: 1, He: 2, Li: 1, Be: 2, B: 3, C: 4, N: 5, O: 6,
+  F: 7, Ne: 8, Na: 1, Mg: 2, Al: 3, Si: 4, P: 5, S: 6,
+  Cl: 7, Ar: 8, K: 1, Ca: 2, Br: 7, I: 7, Se: 6,
+};
+
+// 电负性顺序（越大越电负性）
+const ELECTRONEGATIVITY: Record<string, number> = {
+  H: 2.20, Li: 0.98, Be: 1.57, B: 2.04, C: 2.55, N: 3.04, O: 3.44,
+  F: 3.98, Na: 0.93, Mg: 1.31, Al: 1.61, Si: 1.90, P: 2.19, S: 2.58,
+  Cl: 3.16, K: 0.82, Ca: 1.00, Br: 2.96, I: 2.66, Se: 2.55,
+  Fe: 1.83, Cu: 1.90, Zn: 1.65, Ag: 1.93, Au: 2.54,
 };
 
 // 同分异构体数据库
@@ -189,6 +229,229 @@ function saveCurrentMolecule(state: ChemState): Molecule[] {
 
 const STORAGE_KEY = 'sy-chem-saved-molecules';
 
+// ========== v1.3.0 辅助函数 ==========
+
+// 构建邻接表
+function buildAdj(atoms: AtomNode[], bonds: Bond[]): Map<string, { neighborId: string; bondType: 1 | 2 | 3; bondId: string }[]> {
+  const adj = new Map<string, { neighborId: string; bondType: 1 | 2 | 3; bondId: string }[]>();
+  for (const atom of atoms) {
+    adj.set(atom.id, []);
+  }
+  for (const bond of bonds) {
+    adj.get(bond.from)?.push({ neighborId: bond.to, bondType: bond.type, bondId: bond.id });
+    adj.get(bond.to)?.push({ neighborId: bond.from, bondType: bond.type, bondId: bond.id });
+  }
+  return adj;
+}
+
+// 获取原子已使用的键级总和
+function getUsedBonds(atomId: string, bonds: Bond[]): number {
+  return bonds
+    .filter(b => b.from === atomId || b.to === atomId)
+    .reduce((sum, b) => sum + b.type, 0);
+}
+
+// 获取原子的邻居ID列表
+function getNeighborIds(atomId: string, bonds: Bond[]): string[] {
+  const neighbors: string[] = [];
+  for (const bond of bonds) {
+    if (bond.from === atomId) neighbors.push(bond.to);
+    else if (bond.to === atomId) neighbors.push(bond.from);
+  }
+  return neighbors;
+}
+
+// 检测官能团
+function detectFunctionalGroup(atoms: AtomNode[], bonds: Bond[], group: string): boolean {
+  const adj = buildAdj(atoms, bonds);
+
+  switch (group) {
+    case 'OH': {
+      return atoms.some(a => {
+        if (a.symbol !== 'O') return false;
+        const neighbors = adj.get(a.id) || [];
+        const hNeighbors = neighbors.filter(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'H';
+        });
+        return hNeighbors.length >= 1;
+      });
+    }
+    case 'COOH': {
+      return atoms.some(a => {
+        if (a.symbol !== 'C') return false;
+        const neighbors = adj.get(a.id) || [];
+        const hasDoubleO = neighbors.some(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'O' && n.bondType === 2;
+        });
+        const hasSingleOH = neighbors.some(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          if (!na || na.symbol !== 'O' || n.bondType !== 1) return false;
+          const oNeighbors = adj.get(na.id) || [];
+          return oNeighbors.some(on => {
+            const oa = atoms.find(x => x.id === on.neighborId);
+            return oa && oa.symbol === 'H';
+          });
+        });
+        return hasDoubleO && hasSingleOH;
+      });
+    }
+    case 'CHO': {
+      return atoms.some(a => {
+        if (a.symbol !== 'C') return false;
+        const neighbors = adj.get(a.id) || [];
+        const hasDoubleO = neighbors.some(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'O' && n.bondType === 2;
+        });
+        const hasH = neighbors.some(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'H';
+        });
+        return hasDoubleO && hasH;
+      });
+    }
+    case 'NH2': {
+      return atoms.some(a => {
+        if (a.symbol !== 'N') return false;
+        const neighbors = adj.get(a.id) || [];
+        const hCount = neighbors.filter(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'H';
+        }).length;
+        return hCount >= 2;
+      });
+    }
+    case 'C=O': {
+      return atoms.some(a => {
+        if (a.symbol !== 'C') return false;
+        const neighbors = adj.get(a.id) || [];
+        const hasDoubleO = neighbors.some(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'O' && n.bondType === 2;
+        });
+        const hasH = neighbors.some(n => {
+          const na = atoms.find(x => x.id === n.neighborId);
+          return na && na.symbol === 'H';
+        });
+        return hasDoubleO && !hasH;
+      });
+    }
+    default:
+      return false;
+  }
+}
+
+// 计算支链大小
+function countBranchSize(
+  atomId: string,
+  parentChainSet: Set<string>,
+  adj: Map<string, { neighborId: string; bondType: 1 | 2 | 3 }[]>,
+  carbonIds: Set<string>
+): number {
+  const visited = new Set<string>();
+  let count = 0;
+
+  function dfs(id: string) {
+    if (visited.has(id)) return;
+    if (!carbonIds.has(id)) return;
+    visited.add(id);
+    count++;
+    const neighbors = adj.get(id) || [];
+    for (const { neighborId } of neighbors) {
+      if (!parentChainSet.has(neighborId)) {
+        dfs(neighborId);
+      }
+    }
+  }
+
+  dfs(atomId);
+  return count;
+}
+
+// 获取子树签名（用于手性中心判断）
+function getSubtreeSignature(
+  atomId: string,
+  parentId: string,
+  adj: Map<string, { neighborId: string; bondType: 1 | 2 | 3 }[]>,
+  atoms: AtomNode[]
+): string {
+  const visited = new Set<string>();
+  const parts: string[] = [];
+
+  function dfs(id: string, depth: number) {
+    if (visited.has(id) || depth > 10) return;
+    visited.add(id);
+
+    const atom = atoms.find(a => a.id === id);
+    if (!atom) return;
+
+    parts.push(atom.symbol);
+
+    const neighbors = adj.get(id) || [];
+    const childParts: string[] = [];
+    for (const { neighborId, bondType } of neighbors) {
+      if (neighborId === parentId && depth === 0) continue;
+      if (visited.has(neighborId)) continue;
+      const subParts: string[] = [];
+      const savedParts = [...parts];
+      parts.length = 0;
+      dfs(neighborId, depth + 1);
+      subParts.push(...parts);
+      parts.length = 0;
+      parts.push(...savedParts);
+      childParts.push(`${bondType}:${subParts.join(',')}`);
+    }
+
+    if (childParts.length > 0) {
+      childParts.sort();
+      parts.push(`(${childParts.join(';')})`);
+    }
+  }
+
+  dfs(atomId, 0);
+  return parts.join(',');
+}
+
+// ========== v1.3.0 SMILES 辅助 ==========
+
+// 解析 SMILES 中的元素符号，返回 { symbol, length }
+function parseSMILESElement(smiles: string, pos: number): { symbol: string; length: number } | null {
+  if (pos >= smiles.length) return null;
+  const ch = smiles[pos];
+
+  // 方括号内的元素 [XX]
+  if (ch === '[') {
+    const end = smiles.indexOf(']', pos);
+    if (end < 0) return null;
+    const content = smiles.substring(pos + 1, end);
+    // 去掉电荷和氢标记，只取元素符号
+    const elementMatch = content.match(/^([A-Z][a-z]?)/);
+    if (elementMatch) {
+      return { symbol: elementMatch[1], length: end - pos + 1 };
+    }
+    return null;
+  }
+
+  // 两字母元素
+  if (pos + 1 < smiles.length) {
+    const twoLetter = smiles.substring(pos, pos + 2);
+    const twoLetterElements = ['Cl', 'Br', 'Si', 'Se', 'Na', 'Li', 'Al', 'Mg', 'Ca', 'Fe', 'Cu', 'Zn', 'Ag', 'Au'];
+    if (twoLetterElements.includes(twoLetter)) {
+      return { symbol: twoLetter, length: 2 };
+    }
+  }
+
+  // 单字母元素
+  const singleLetterElements = ['C', 'N', 'O', 'S', 'P', 'F', 'I', 'B', 'K', 'V', 'W', 'U'];
+  if (singleLetterElements.includes(ch)) {
+    return { symbol: ch, length: 1 };
+  }
+
+  return null;
+}
+
 export const useChemStore = create<ChemState>((set, get) => ({
   atoms: [],
   bonds: [],
@@ -207,6 +470,11 @@ export const useChemStore = create<ChemState>((set, get) => ({
   // Multi-molecule
   molecules: [{ id: 'mol_default', name: '分子1', atoms: [], bonds: [] }],
   activeMoleculeId: 'mol_default',
+
+  // v1.3.0 state
+  clipboard: null,
+  theme: 'light',
+  language: 'zh',
 
   undo: () => {
     const { history, historyIndex } = get();
@@ -1421,172 +1689,1010 @@ export const useChemStore = create<ChemState>((set, get) => ({
       bonds: JSON.parse(JSON.stringify(bonds)),
     };
   },
-}));
 
-// ========== 辅助函数 ==========
+  // ========== v1.3.0 新增功能 ==========
 
-// 检测官能团
-function detectFunctionalGroup(atoms: AtomNode[], bonds: Bond[], group: string): boolean {
-  const adj = new Map<string, { neighborId: string; bondType: 1 | 2 | 3 }[]>();
-  for (const atom of atoms) {
-    adj.set(atom.id, []);
-  }
-  for (const bond of bonds) {
-    adj.get(bond.from)?.push({ neighborId: bond.to, bondType: bond.type });
-    adj.get(bond.to)?.push({ neighborId: bond.from, bondType: bond.type });
-  }
+  // 1. SMILES 导出
+  getSMILES: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return '';
 
-  switch (group) {
-    case 'OH': {
-      // O 连着一个 H 且 O 只有一个非 H 邻居
-      return atoms.some(a => {
-        if (a.symbol !== 'O') return false;
-        const neighbors = adj.get(a.id) || [];
-        const hNeighbors = neighbors.filter(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'H';
-        });
-        return hNeighbors.length >= 1;
-      });
-    }
-    case 'COOH': {
-      // C 连着 =O 和 -O-H
-      return atoms.some(a => {
-        if (a.symbol !== 'C') return false;
-        const neighbors = adj.get(a.id) || [];
-        const hasDoubleO = neighbors.some(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'O' && n.bondType === 2;
-        });
-        const hasSingleOH = neighbors.some(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          if (!na || na.symbol !== 'O' || n.bondType !== 1) return false;
-          const oNeighbors = adj.get(na.id) || [];
-          return oNeighbors.some(on => {
-            const oa = atoms.find(x => x.id === on.neighborId);
-            return oa && oa.symbol === 'H';
-          });
-        });
-        return hasDoubleO && hasSingleOH;
-      });
-    }
-    case 'CHO': {
-      // C 连着 =O 和 H（醛基）
-      return atoms.some(a => {
-        if (a.symbol !== 'C') return false;
-        const neighbors = adj.get(a.id) || [];
-        const hasDoubleO = neighbors.some(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'O' && n.bondType === 2;
-        });
-        const hasH = neighbors.some(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'H';
-        });
-        return hasDoubleO && hasH;
-      });
-    }
-    case 'NH2': {
-      // N 连着至少2个 H
-      return atoms.some(a => {
-        if (a.symbol !== 'N') return false;
-        const neighbors = adj.get(a.id) || [];
-        const hCount = neighbors.filter(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'H';
-        }).length;
-        return hCount >= 2;
-      });
-    }
-    case 'C=O': {
-      // C=O 但不是 COOH 或 CHO 的酮基
-      return atoms.some(a => {
-        if (a.symbol !== 'C') return false;
-        const neighbors = adj.get(a.id) || [];
-        const hasDoubleO = neighbors.some(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'O' && n.bondType === 2;
-        });
-        // 排除醛基（C=O 且 C 连着 H）
-        const hasH = neighbors.some(n => {
-          const na = atoms.find(x => x.id === n.neighborId);
-          return na && na.symbol === 'H';
-        });
-        return hasDoubleO && !hasH;
-      });
-    }
-    default:
-      return false;
-  }
-}
+    const adj = buildAdj(atoms, bonds);
 
-// 计算支链大小
-function countBranchSize(
-  atomId: string,
-  parentChainSet: Set<string>,
-  adj: Map<string, { neighborId: string; bondType: 1 | 2 | 3 }[]>,
-  carbonIds: Set<string>
-): number {
-  const visited = new Set<string>();
-  let count = 0;
+    // 过滤掉 H 原子（隐式氢）
+    const heavyAtoms = atoms.filter(a => a.symbol !== 'H');
+    if (heavyAtoms.length === 0) return '';
 
-  function dfs(id: string) {
-    if (visited.has(id)) return;
-    if (!carbonIds.has(id)) return;
-    visited.add(id);
-    count++;
-    const neighbors = adj.get(id) || [];
-    for (const { neighborId } of neighbors) {
-      if (!parentChainSet.has(neighborId)) {
-        dfs(neighborId);
+    const visited = new Set<string>();
+    const ringClosures = new Map<string, number>(); // atomId -> ring number
+    let ringNumber = 0;
+    let smiles = '';
+
+    function dfs(atomId: string, parentId: string | null): void {
+      if (visited.has(atomId)) {
+        // 环闭合
+        if (ringClosures.has(atomId)) {
+          const num = ringClosures.get(atomId)!;
+          smiles += num < 10 ? `${num}` : `%${num}`;
+        }
+        return;
+      }
+      visited.add(atomId);
+
+      const atom = atoms.find(a => a.id === atomId);
+      if (!atom) return;
+
+      // 写入原子符号
+      smiles += atom.symbol;
+
+      // 获取非 H 邻居
+      const neighbors = (adj.get(atomId) || [])
+        .filter(n => {
+          const na = atoms.find(a => a.id === n.neighborId);
+          return na && na.symbol !== 'H';
+        });
+
+      // 分离已访问和未访问的邻居
+      const unvisitedNeighbors = neighbors.filter(n => !visited.has(n.neighborId));
+      const visitedNeighbors = neighbors.filter(n => visited.has(n.neighborId) && n.neighborId !== parentId);
+
+      // 处理环闭合（已访问的非父邻居）
+      for (const vn of visitedNeighbors) {
+        if (!ringClosures.has(vn.neighborId)) {
+          ringNumber++;
+          ringClosures.set(vn.neighborId, ringNumber);
+          smiles += ringNumber < 10 ? `${ringNumber}` : `%${ringNumber}`;
+        }
+      }
+
+      // 处理子节点
+      for (let i = 0; i < unvisitedNeighbors.length; i++) {
+        const neighbor = unvisitedNeighbors[i];
+
+        // 写入键型
+        if (neighbor.bondType === 2) smiles += '=';
+        else if (neighbor.bondType === 3) smiles += '#';
+
+        // 如果有多个未访问邻居，用括号表示分支
+        if (i < unvisitedNeighbors.length - 1) {
+          smiles += '(';
+          dfs(neighbor.neighborId, atomId);
+          smiles += ')';
+        } else {
+          dfs(neighbor.neighborId, atomId);
+        }
       }
     }
-  }
 
-  dfs(atomId);
-  return count;
-}
+    // 从第一个重原子开始 DFS
+    dfs(heavyAtoms[0].id, null);
 
-// 获取子树签名（用于手性中心判断）
-function getSubtreeSignature(
-  atomId: string,
-  parentId: string,
-  adj: Map<string, { neighborId: string; bondType: 1 | 2 | 3 }[]>,
-  atoms: AtomNode[]
-): string {
-  const visited = new Set<string>();
-  const parts: string[] = [];
-
-  function dfs(id: string, depth: number) {
-    if (visited.has(id) || depth > 10) return;
-    visited.add(id);
-
-    const atom = atoms.find(a => a.id === id);
-    if (!atom) return;
-
-    parts.push(atom.symbol);
-
-    const neighbors = adj.get(id) || [];
-    const childParts: string[] = [];
-    for (const { neighborId, bondType } of neighbors) {
-      if (neighborId === parentId && depth === 0) continue;
-      if (visited.has(neighborId)) continue;
-      const subParts: string[] = [];
-      const savedParts = [...parts];
-      parts.length = 0;
-      dfs(neighborId, depth + 1);
-      subParts.push(...parts);
-      parts.length = 0;
-      parts.push(...savedParts);
-      childParts.push(`${bondType}:${subParts.join(',')}`);
+    // 处理未连通的组件
+    for (const atom of heavyAtoms) {
+      if (!visited.has(atom.id)) {
+        smiles += '.';
+        dfs(atom.id, null);
+      }
     }
 
-    if (childParts.length > 0) {
-      childParts.sort();
-      parts.push(`(${childParts.join(';')})`);
-    }
-  }
+    return smiles;
+  },
 
-  dfs(atomId, 0);
-  return parts.join(',');
-}
+  // 2. SMILES 导入
+  importSMILES: (smiles: string) => {
+    const newAtoms: AtomNode[] = [];
+    const newBonds: Bond[] = [];
+    const atomStack: string[] = []; // 当前分支栈
+    const ringOpeners = new Map<number, string>(); // ringNumber -> atomId
+    let currentAtomId: string | null = null;
+    let pendingBondType: 1 | 2 | 3 = 1;
+    let x = 0;
+    const y = 0;
+    const SPACING = 60;
+    let atomIndex = 0;
+
+    let pos = 0;
+    while (pos < smiles.length) {
+      const ch = smiles[pos];
+
+      if (ch === '(') {
+        // 开始分支
+        if (currentAtomId) {
+          atomStack.push(currentAtomId);
+        }
+        pos++;
+        continue;
+      }
+
+      if (ch === ')') {
+        // 结束分支
+        currentAtomId = atomStack.pop() || null;
+        pendingBondType = 1;
+        pos++;
+        continue;
+      }
+
+      if (ch === '=') {
+        pendingBondType = 2;
+        pos++;
+        continue;
+      }
+
+      if (ch === '#') {
+        pendingBondType = 3;
+        pos++;
+        continue;
+      }
+
+      if (ch === '.') {
+        // 断开连接
+        currentAtomId = null;
+        pendingBondType = 1;
+        pos++;
+        continue;
+      }
+
+      if (ch === '-') {
+        // 单键（显式）
+        pendingBondType = 1;
+        pos++;
+        continue;
+      }
+
+      // 数字：环闭合
+      if (ch >= '0' && ch <= '9') {
+        const num = parseInt(ch, 10);
+        if (ringOpeners.has(num)) {
+          // 闭合环
+          const openerId = ringOpeners.get(num)!;
+          if (currentAtomId && openerId !== currentAtomId) {
+            // 检查是否已有键
+            const existingBond = newBonds.find(
+              b => (b.from === currentAtomId && b.to === openerId) ||
+                   (b.from === openerId && b.to === currentAtomId)
+            );
+            if (!existingBond) {
+              newBonds.push({ id: genBondId(), from: currentAtomId, to: openerId, type: pendingBondType });
+            }
+          }
+          ringOpeners.delete(num);
+        } else if (currentAtomId) {
+          // 开启环
+          ringOpeners.set(num, currentAtomId);
+        }
+        pendingBondType = 1;
+        pos++;
+        continue;
+      }
+
+      // % 后跟两位数字的环号
+      if (ch === '%' && pos + 2 < smiles.length) {
+        const num = parseInt(smiles.substring(pos + 1, pos + 3), 10);
+        if (ringOpeners.has(num)) {
+          const openerId = ringOpeners.get(num)!;
+          if (currentAtomId && openerId !== currentAtomId) {
+            const existingBond = newBonds.find(
+              b => (b.from === currentAtomId && b.to === openerId) ||
+                   (b.from === openerId && b.to === currentAtomId)
+            );
+            if (!existingBond) {
+              newBonds.push({ id: genBondId(), from: currentAtomId, to: openerId, type: pendingBondType });
+            }
+          }
+          ringOpeners.delete(num);
+        } else if (currentAtomId) {
+          ringOpeners.set(num, currentAtomId);
+        }
+        pendingBondType = 1;
+        pos += 3;
+        continue;
+      }
+
+      // 方括号原子
+      if (ch === '[') {
+        const end = smiles.indexOf(']', pos);
+        if (end < 0) break;
+        const content = smiles.substring(pos + 1, end);
+        const elementMatch = content.match(/^([A-Z][a-z]?)/);
+        if (elementMatch) {
+          const symbol = elementMatch[1];
+          const atomId = genId();
+          newAtoms.push({ id: atomId, symbol, x, y });
+          if (currentAtomId) {
+            newBonds.push({ id: genBondId(), from: currentAtomId, to: atomId, type: pendingBondType });
+            pendingBondType = 1;
+          }
+          currentAtomId = atomId;
+          atomIndex++;
+          x = atomIndex * SPACING;
+        }
+        pos = end + 1;
+        continue;
+      }
+
+      // 元素符号
+      const elementResult = parseSMILESElement(smiles, pos);
+      if (elementResult) {
+        const atomId = genId();
+        newAtoms.push({ id: atomId, symbol: elementResult.symbol, x, y });
+        if (currentAtomId) {
+          newBonds.push({ id: genBondId(), from: currentAtomId, to: atomId, type: pendingBondType });
+          pendingBondType = 1;
+        }
+        currentAtomId = atomId;
+        atomIndex++;
+        x = atomIndex * SPACING;
+        pos += elementResult.length;
+        continue;
+      }
+
+      // 未知字符，跳过
+      pos++;
+    }
+
+    // 清空画布并设置新原子和键
+    set(state => {
+      const histUpdate = pushHistory(state);
+      return {
+        atoms: newAtoms,
+        bonds: newBonds,
+        selectedAtomId: null,
+        selectedBondId: null,
+        ...histUpdate,
+      };
+    });
+  },
+
+  // 3. 自动布局
+  autoLayout: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return;
+
+    const adj = buildAdj(atoms, bonds);
+    const SPACING = 60;
+
+    // 找到键最多的原子作为根
+    let rootAtom = atoms[0];
+    let maxBonds = 0;
+    for (const atom of atoms) {
+      const bondCount = (adj.get(atom.id) || []).length;
+      if (bondCount > maxBonds) {
+        maxBonds = bondCount;
+        rootAtom = atom;
+      }
+    }
+
+    const visited = new Set<string>();
+    const positions = new Map<string, { x: number; y: number }>();
+
+    function dfs(atomId: string, x: number, y: number, angle: number, parentId: string | null): void {
+      if (visited.has(atomId)) return;
+      visited.add(atomId);
+      positions.set(atomId, { x, y });
+
+      const neighbors = (adj.get(atomId) || [])
+        .filter(n => n.neighborId !== parentId && !visited.has(n.neighborId));
+
+      if (neighbors.length === 0) return;
+
+      // 计算角度分布
+      const angleSpread = Math.PI * 0.6; // 子节点角度范围
+      const startAngle = angle - angleSpread / 2;
+      const angleStep = neighbors.length > 1 ? angleSpread / (neighbors.length - 1) : 0;
+
+      for (let i = 0; i < neighbors.length; i++) {
+        const childAngle = neighbors.length === 1 ? angle : startAngle + i * angleStep;
+        const childX = x + SPACING * Math.cos(childAngle);
+        const childY = y + SPACING * Math.sin(childAngle);
+        dfs(neighbors[i].neighborId, childX, childY, childAngle, atomId);
+      }
+    }
+
+    dfs(rootAtom.id, 0, 0, 0, null);
+
+    // 处理未连通的组件
+    for (const atom of atoms) {
+      if (!visited.has(atom.id)) {
+        const maxX = Math.max(...Array.from(positions.values()).map(p => p.x), 0);
+        dfs(atom.id, maxX + SPACING * 2, 0, 0, null);
+      }
+    }
+
+    // 居中
+    if (positions.size > 0) {
+      const allPos = Array.from(positions.values());
+      const centerX = allPos.reduce((s, p) => s + p.x, 0) / allPos.length;
+      const centerY = allPos.reduce((s, p) => s + p.y, 0) / allPos.length;
+
+      for (const [id, pos] of positions) {
+        positions.set(id, { x: pos.x - centerX, y: pos.y - centerY });
+      }
+    }
+
+    // 应用新位置
+    set(state => {
+      const histUpdate = pushHistory(state);
+      const newAtoms = state.atoms.map(a => {
+        const pos = positions.get(a.id);
+        return pos ? { ...a, x: pos.x, y: pos.y } : a;
+      });
+      return { atoms: newAtoms, ...histUpdate };
+    });
+  },
+
+  // 4. 适配视图
+  fitToView: (canvasWidth: number, canvasHeight: number) => {
+    const { atoms } = get();
+    if (atoms.length === 0) return;
+
+    const minX = Math.min(...atoms.map(a => a.x));
+    const maxX = Math.max(...atoms.map(a => a.x));
+    const minY = Math.min(...atoms.map(a => a.y));
+    const maxY = Math.max(...atoms.map(a => a.y));
+
+    const padding = 80;
+    const contentWidth = maxX - minX + padding * 2;
+    const contentHeight = maxY - minY + padding * 2;
+
+    const scaleX = canvasWidth / contentWidth;
+    const scaleY = canvasHeight / contentHeight;
+    const scale = Math.min(scaleX, scaleY, 2); // 最大缩放2倍
+
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    set({
+      canvasScale: scale,
+      canvasOffset: {
+        x: canvasWidth / 2 - centerX * scale,
+        y: canvasHeight / 2 - centerY * scale,
+      },
+    });
+  },
+
+  // 5. 形式电荷
+  getFormalCharge: (atomId: string) => {
+    const { atoms, bonds } = get();
+    const atom = atoms.find(a => a.id === atomId);
+    if (!atom) return 0;
+
+    const valence = VALENCE_ELECTRONS[atom.symbol] || 0;
+    if (valence === 0) return 0;
+
+    const usedBonds = getUsedBonds(atomId, bonds);
+    const bondingElectrons = usedBonds * 2; // 每个键贡献2个电子
+    const element = ELEMENT_MAP.get(atom.symbol);
+    const maxBonds = element ? element.maxBonds : usedBonds;
+    const nonBondingElectrons = Math.max(0, (maxBonds - usedBonds)) * 2; // 简化估计孤对电子
+
+    // 形式电荷 = 价电子 - (非键电子 + 键合电子/2)
+    const formalCharge = valence - (nonBondingElectrons + bondingElectrons / 2);
+    return Math.round(formalCharge);
+  },
+
+  // 6. 氧化态
+  getOxidationState: (atomId: string) => {
+    const { atoms, bonds } = get();
+    const atom = atoms.find(a => a.id === atomId);
+    if (!atom) return 0;
+
+    const valence = VALENCE_ELECTRONS[atom.symbol] || 0;
+    if (valence === 0) return 0;
+
+    const atomBonds = bonds.filter(b => b.from === atomId || b.to === atomId);
+    let assignedElectrons = 0;
+
+    for (const bond of atomBonds) {
+      const otherId = bond.from === atomId ? bond.to : bond.from;
+      const otherAtom = atoms.find(a => a.id === otherId);
+      if (!otherAtom) continue;
+
+      const myEN = ELECTRONEGATIVITY[atom.symbol] || 0;
+      const otherEN = ELECTRONEGATIVITY[otherAtom.symbol] || 0;
+
+      if (myEN > otherEN) {
+        // 我更电负性，获得所有键合电子
+        assignedElectrons += bond.type * 2;
+      } else if (myEN === otherEN) {
+        // 同种元素，平分
+        assignedElectrons += bond.type;
+      }
+      // 否则对方更电负性，我不获得电子
+    }
+
+    // 氧化态 = 价电子 - 分配到的电子
+    return valence - assignedElectrons;
+  },
+
+  // 7. 环检测
+  getRings: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return [];
+
+    const adj = buildAdj(atoms, bonds);
+    const rings: string[][] = [];
+    const visited = new Set<string>();
+    const parent = new Map<string, string | null>();
+
+    function dfs(atomId: string, parentId: string | null): void {
+      visited.add(atomId);
+      parent.set(atomId, parentId);
+
+      const neighbors = adj.get(atomId) || [];
+      for (const { neighborId } of neighbors) {
+        if (!visited.has(neighborId)) {
+          dfs(neighborId, atomId);
+        } else if (neighborId !== parentId) {
+          // 找到环：回溯从 neighborId 到当前原子的路径
+          const ring: string[] = [atomId];
+          let current: string | null = atomId;
+          while (current && current !== neighborId) {
+            current = parent.get(current) || null;
+            if (current && current !== neighborId) {
+              ring.push(current);
+            }
+          }
+          if (current === neighborId) {
+            ring.push(neighborId);
+            // 只保留最小环（长度 <= 8）
+            if (ring.length >= 3 && ring.length <= 8) {
+              // 检查是否是已有环的排列
+              const sortedRing = [...ring].sort();
+              const isDuplicate = rings.some(r => {
+                const sorted = [...r].sort();
+                if (sorted.length !== sortedRing.length) return false;
+                return sorted.every((id, i) => id === sortedRing[i]);
+              });
+              if (!isDuplicate) {
+                rings.push(ring);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    for (const atom of atoms) {
+      if (!visited.has(atom.id)) {
+        dfs(atom.id, null);
+      }
+    }
+
+    return rings;
+  },
+
+  // 8. 共振结构
+  getResonanceStructures: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return [];
+
+    const structures: { atoms: AtomNode[]; bonds: Bond[] }[] = [];
+    // 原始结构
+    structures.push({
+      atoms: JSON.parse(JSON.stringify(atoms)),
+      bonds: JSON.parse(JSON.stringify(bonds)),
+    });
+
+    // 查找共轭系统（交替单/双键路径）
+    const adj = buildAdj(atoms, bonds);
+
+    // 找所有双键
+    const doubleBonds = bonds.filter(b => b.type === 2);
+
+    if (doubleBonds.length === 0) return structures;
+
+    // 找共轭路径：双键-单键-双键
+    const conjugatedPaths: { bond1: Bond; middleAtom1: string; middleAtom2: string; bond2: Bond }[] = [];
+
+    for (const db1 of doubleBonds) {
+      // 从 db1 的两端找单键连接的另一个双键
+      for (const endId of [db1.from, db1.to]) {
+        const neighbors = adj.get(endId) || [];
+        for (const { neighborId, bondType } of neighbors) {
+          if (bondType !== 1) continue;
+          // 检查 neighborId 是否连着另一个双键
+          const neighborBonds = adj.get(neighborId) || [];
+          for (const { neighborId: nextId, bondType: nextBondType } of neighborBonds) {
+            if (nextBondType !== 2) continue;
+            const db2 = bonds.find(b =>
+              b.id !== db1.id &&
+              ((b.from === neighborId && b.to === nextId) || (b.to === neighborId && b.from === nextId))
+            );
+            if (db2) {
+              conjugatedPaths.push({
+                bond1: db1,
+                middleAtom1: endId,
+                middleAtom2: neighborId,
+                bond2: db2,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // 生成共振结构：移动双键
+    if (conjugatedPaths.length > 0) {
+      const newBonds = JSON.parse(JSON.stringify(bonds)) as Bond[];
+      for (const path of conjugatedPaths.slice(0, 3)) {
+        // bond1: 双→单，中间键: 单→双，bond2: 双→单
+        const b1 = newBonds.find((b: Bond) => b.id === path.bond1.id);
+        const b2 = newBonds.find((b: Bond) => b.id === path.bond2.id);
+        const middleBond = newBonds.find((b: Bond) =>
+          (b.from === path.middleAtom1 && b.to === path.middleAtom2) ||
+          (b.from === path.middleAtom2 && b.to === path.middleAtom1)
+        );
+
+        if (b1 && b2 && middleBond) {
+          b1.type = 1;
+          middleBond.type = 2;
+          b2.type = 1;
+        }
+      }
+      structures.push({
+        atoms: JSON.parse(JSON.stringify(atoms)),
+        bonds: newBonds,
+      });
+
+      // 对于苯环，生成第二个 Kekulé 结构
+      const rings = get().getRings();
+      const has6Ring = rings.some(r => r.length === 6);
+      if (has6Ring && conjugatedPaths.length >= 3) {
+        const newBonds2 = JSON.parse(JSON.stringify(bonds)) as Bond[];
+        // 翻转所有环上的双/单键
+        for (const path of conjugatedPaths) {
+          const b1 = newBonds2.find((b: Bond) => b.id === path.bond1.id);
+          const b2 = newBonds2.find((b: Bond) => b.id === path.bond2.id);
+          const middleBond = newBonds2.find((b: Bond) =>
+            (b.from === path.middleAtom1 && b.to === path.middleAtom2) ||
+            (b.from === path.middleAtom2 && b.to === path.middleAtom1)
+          );
+          if (b1 && b2 && middleBond) {
+            if (b1.type === 2) b1.type = 1;
+            else if (b1.type === 1) b1.type = 2;
+            if (middleBond.type === 2) middleBond.type = 1;
+            else if (middleBond.type === 1) middleBond.type = 2;
+            if (b2.type === 2) b2.type = 1;
+            else if (b2.type === 1) b2.type = 2;
+          }
+        }
+        structures.push({
+          atoms: JSON.parse(JSON.stringify(atoms)),
+          bonds: newBonds2,
+        });
+      }
+    }
+
+    // 最多返回3个
+    return structures.slice(0, 3);
+  },
+
+  // 9. IR 光谱预测
+  getIRPeaks: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return [];
+
+    const peaks: { wavenumber: number; intensity: string; assignment: string }[] = [];
+    const adj = buildAdj(atoms, bonds);
+
+    const counts: Record<string, number> = {};
+    for (const atom of atoms) {
+      counts[atom.symbol] = (counts[atom.symbol] || 0) + 1;
+    }
+
+    // O-H 伸缩
+    const hasOH = detectFunctionalGroup(atoms, bonds, 'OH');
+    if (hasOH) {
+      peaks.push({ wavenumber: 3400, intensity: '宽强', assignment: 'O-H 伸缩振动' });
+    }
+
+    // N-H 伸缩
+    const hasNH2 = detectFunctionalGroup(atoms, bonds, 'NH2');
+    if (hasNH2) {
+      peaks.push({ wavenumber: 3400, intensity: '中强', assignment: 'N-H 伸缩振动' });
+    }
+
+    // C-H 伸缩
+    if (counts['C'] > 0 && counts['H'] > 0) {
+      // 检查是否有双键或三键
+      const hasCdoubleC = bonds.some(b => b.type === 2);
+      const hasCTripleC = bonds.some(b => b.type === 3);
+      if (hasCTripleC) {
+        peaks.push({ wavenumber: 3300, intensity: '中强', assignment: '≡C-H 伸缩振动' });
+      } else if (hasCdoubleC) {
+        peaks.push({ wavenumber: 3050, intensity: '中强', assignment: '=C-H 伸缩振动' });
+      }
+      peaks.push({ wavenumber: 2950, intensity: '中强', assignment: 'C-H 伸缩振动' });
+    }
+
+    // C≡C 伸缩
+    if (bonds.some(b => b.type === 3)) {
+      const hasTripleBond = bonds.some(b => {
+        const fromAtom = atoms.find(a => a.id === b.from);
+        const toAtom = atoms.find(a => a.id === b.to);
+        return b.type === 3 && fromAtom?.symbol === 'C' && toAtom?.symbol === 'C';
+      });
+      if (hasTripleBond) {
+        peaks.push({ wavenumber: 2200, intensity: '中', assignment: 'C≡C 伸缩振动' });
+      }
+    }
+
+    // C=O 伸缩
+    const hasCO = bonds.some(b => {
+      if (b.type !== 2) return false;
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      return (fromAtom?.symbol === 'C' && toAtom?.symbol === 'O') ||
+             (fromAtom?.symbol === 'O' && toAtom?.symbol === 'C');
+    });
+    if (hasCO) {
+      const hasCOOH = detectFunctionalGroup(atoms, bonds, 'COOH');
+      if (hasCOOH) {
+        peaks.push({ wavenumber: 1720, intensity: '强', assignment: '羧基 C=O 伸缩振动' });
+      } else {
+        const hasCHO = detectFunctionalGroup(atoms, bonds, 'CHO');
+        if (hasCHO) {
+          peaks.push({ wavenumber: 1730, intensity: '强', assignment: '醛基 C=O 伸缩振动' });
+        } else {
+          peaks.push({ wavenumber: 1715, intensity: '强', assignment: 'C=O 伸缩振动' });
+        }
+      }
+    }
+
+    // C=C 伸缩
+    const hasCCdouble = bonds.some(b => {
+      if (b.type !== 2) return false;
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      return fromAtom?.symbol === 'C' && toAtom?.symbol === 'C';
+    });
+    if (hasCCdouble) {
+      peaks.push({ wavenumber: 1640, intensity: '中', assignment: 'C=C 伸缩振动' });
+    }
+
+    // C-O 伸缩
+    const hasCOsingle = bonds.some(b => {
+      if (b.type !== 1) return false;
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      return (fromAtom?.symbol === 'C' && toAtom?.symbol === 'O') ||
+             (fromAtom?.symbol === 'O' && toAtom?.symbol === 'C');
+    });
+    if (hasCOsingle) {
+      peaks.push({ wavenumber: 1100, intensity: '强', assignment: 'C-O 伸缩振动' });
+    }
+
+    return peaks;
+  },
+
+  // 10. NMR 化学位移预测
+  getNMRSifts: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return [];
+
+    const shifts: { atomId: string; ppm: number; type: string }[] = [];
+    const adj = buildAdj(atoms, bonds);
+
+    for (const atom of atoms) {
+      if (atom.symbol === 'H') {
+        // ¹H NMR
+        const neighbors = adj.get(atom.id) || [];
+        const parentAtom = neighbors.length > 0
+          ? atoms.find(a => a.id === neighbors[0].neighborId)
+          : null;
+
+        if (!parentAtom) {
+          shifts.push({ atomId: atom.id, ppm: 1.0, type: '¹H' });
+          continue;
+        }
+
+        let ppm = 1.0;
+
+        // 根据连接的原子类型估算
+        if (parentAtom.symbol === 'O') {
+          ppm = 3.5; // OH
+          // 检查是否是羧基 OH
+          const oNeighbors = adj.get(parentAtom.id) || [];
+          const hasCdoubleO = oNeighbors.some(n => {
+            const na = atoms.find(a => a.id === n.neighborId);
+            return na && na.symbol === 'C' && n.bondType === 2;
+          });
+          if (hasCdoubleO) ppm = 11.0; // 羧酸 OH
+        } else if (parentAtom.symbol === 'N') {
+          ppm = 2.5; // NH
+        } else if (parentAtom.symbol === 'C') {
+          // 检查 C 的键型
+          const cBonds = bonds.filter(b => b.from === parentAtom.id || b.to === parentAtom.id);
+          const hasDouble = cBonds.some(b => b.type === 2);
+          const hasTriple = cBonds.some(b => b.type === 3);
+
+          if (hasTriple) {
+            ppm = 2.5; // 炔氢
+          } else if (hasDouble) {
+            // 检查是否是醛基
+            const hasOdouble = cBonds.some(b => {
+              if (b.type !== 2) return false;
+              const otherId = b.from === parentAtom.id ? b.to : b.from;
+              const otherAtom = atoms.find(a => a.id === otherId);
+              return otherAtom?.symbol === 'O';
+            });
+            if (hasOdouble) {
+              ppm = 9.5; // 醛氢
+            } else {
+              ppm = 5.5; // 烯氢
+            }
+          } else {
+            // 检查是否连着电负性原子
+            const cNeighbors = adj.get(parentAtom.id) || [];
+            const hasElectronegative = cNeighbors.some(n => {
+              const na = atoms.find(a => a.id === n.neighborId);
+              return na && (na.symbol === 'O' || na.symbol === 'N' || na.symbol === 'Cl' || na.symbol === 'Br');
+            });
+            if (hasElectronegative) {
+              ppm = 3.5;
+            } else {
+              ppm = 1.2; // 烷基氢
+            }
+          }
+
+          // 芳香氢
+          const rings = get().getRings();
+          const isInRing = rings.some(r => r.includes(parentAtom.id));
+          if (isInRing && hasDouble) {
+            ppm = 7.2; // 芳香氢
+          }
+        }
+
+        shifts.push({ atomId: atom.id, ppm: Math.round(ppm * 10) / 10, type: '¹H' });
+      } else if (atom.symbol === 'C') {
+        // ¹³C NMR
+        const cBonds = bonds.filter(b => b.from === atom.id || b.to === atom.id);
+        const hasDouble = cBonds.some(b => b.type === 2);
+        const hasTriple = cBonds.some(b => b.type === 3);
+
+        let ppm = 30;
+
+        if (hasTriple) {
+          ppm = 80; // 炔碳
+        } else if (hasDouble) {
+          // 检查是否是羰基
+          const hasOdouble = cBonds.some(b => {
+            if (b.type !== 2) return false;
+            const otherId = b.from === atom.id ? b.to : b.from;
+            const otherAtom = atoms.find(a => a.id === otherId);
+            return otherAtom?.symbol === 'O';
+          });
+          if (hasOdouble) {
+            ppm = 200; // 羰基碳
+          } else {
+            // 芳香碳
+            const rings = get().getRings();
+            const isInRing = rings.some(r => r.includes(atom.id));
+            if (isInRing) {
+              ppm = 130; // 芳香碳
+            } else {
+              ppm = 125; // 烯碳
+            }
+          }
+        } else {
+          // 烷基碳，根据取代基调整
+          const neighbors = adj.get(atom.id) || [];
+          const electronegCount = neighbors.filter(n => {
+            const na = atoms.find(a => a.id === n.neighborId);
+            return na && (na.symbol === 'O' || na.symbol === 'N' || na.symbol === 'Cl');
+          }).length;
+          ppm = 20 + electronegCount * 10;
+        }
+
+        shifts.push({ atomId: atom.id, ppm: Math.round(ppm), type: '¹³C' });
+      }
+    }
+
+    return shifts;
+  },
+
+  // 11. pKa 预测
+  getPKa: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return [];
+
+    const pKaValues: { atomId: string; pKa: number; type: string }[] = [];
+    const adj = buildAdj(atoms, bonds);
+
+    for (const atom of atoms) {
+      if (atom.symbol === 'O') {
+        const neighbors = adj.get(atom.id) || [];
+        const hNeighbor = neighbors.find(n => {
+          const na = atoms.find(a => a.id === n.neighborId);
+          return na && na.symbol === 'H';
+        });
+
+        if (hNeighbor) {
+          // 检查是否是羧基
+          const cNeighbor = neighbors.find(n => {
+            const na = atoms.find(a => a.id === n.neighborId);
+            return na && na.symbol === 'C';
+          });
+
+          if (cNeighbor) {
+            const cNeighbors = adj.get(cNeighbor.neighborId) || [];
+            const hasDoubleO = cNeighbors.some(n => {
+              const na = atoms.find(a => a.id === n.neighborId);
+              return na && na.symbol === 'O' && n.bondType === 2;
+            });
+
+            if (hasDoubleO) {
+              // 羧酸 -OH
+              pKaValues.push({ atomId: atom.id, pKa: 4.5, type: '羧酸' });
+              continue;
+            }
+          }
+
+          // 检查是否是酚（芳香环上的 OH）
+          const rings = get().getRings();
+          const isPhenol = neighbors.some(n => {
+            const na = atoms.find(a => a.id === n.neighborId);
+            if (!na || na.symbol !== 'C') return false;
+            return rings.some(r => r.includes(na.id));
+          });
+
+          if (isPhenol) {
+            pKaValues.push({ atomId: atom.id, pKa: 10, type: '酚' });
+          } else {
+            // 醇 -OH
+            pKaValues.push({ atomId: atom.id, pKa: 16, type: '醇' });
+          }
+        }
+      } else if (atom.symbol === 'N') {
+        const neighbors = adj.get(atom.id) || [];
+        const hCount = neighbors.filter(n => {
+          const na = atoms.find(a => a.id === n.neighborId);
+          return na && na.symbol === 'H';
+        }).length;
+
+        if (hCount >= 1) {
+          // 胺的共轭酸 pKa
+          pKaValues.push({ atomId: atom.id, pKa: 10, type: '胺(共轭酸)' });
+        }
+      } else if (atom.symbol === 'S') {
+        const neighbors = adj.get(atom.id) || [];
+        const hNeighbor = neighbors.find(n => {
+          const na = atoms.find(a => a.id === n.neighborId);
+          return na && na.symbol === 'H';
+        });
+
+        if (hNeighbor) {
+          pKaValues.push({ atomId: atom.id, pKa: 10, type: '硫醇' });
+        }
+      }
+    }
+
+    return pKaValues;
+  },
+
+  // 12. 楔形/虚线键
+  setBondStereo: (id: string, stereo: 'wedge' | 'dash' | 'normal') => {
+    set(state => {
+      const histUpdate = pushHistory(state);
+      return {
+        bonds: state.bonds.map(b =>
+          b.id === id ? { ...b, stereo } : b
+        ),
+        ...histUpdate,
+      };
+    });
+  },
+
+  // 13. 复制选择
+  copySelection: () => {
+    const { atoms, bonds, selectedAtomId } = get();
+    if (!selectedAtomId) return;
+
+    const selectedAtom = atoms.find(a => a.id === selectedAtomId);
+    if (!selectedAtom) return;
+
+    // 收集选中的原子及其直接连接的原子和键
+    const connectedAtomIds = new Set<string>();
+    connectedAtomIds.add(selectedAtomId);
+
+    // 获取直接连接的原子
+    const neighborIds = getNeighborIds(selectedAtomId, bonds);
+    for (const nid of neighborIds) {
+      connectedAtomIds.add(nid);
+    }
+
+    const copiedAtoms = atoms.filter(a => connectedAtomIds.has(a.id));
+    const copiedBonds = bonds.filter(b =>
+      connectedAtomIds.has(b.from) && connectedAtomIds.has(b.to)
+    );
+
+    set({
+      clipboard: {
+        atoms: JSON.parse(JSON.stringify(copiedAtoms)),
+        bonds: JSON.parse(JSON.stringify(copiedBonds)),
+      },
+    });
+  },
+
+  // 14. 粘贴选择
+  pasteSelection: (offsetX: number, offsetY: number) => {
+    const { clipboard } = get();
+    if (!clipboard) return;
+
+    set(state => {
+      const histUpdate = pushHistory(state);
+      const newAtoms = [...state.atoms];
+      const newBonds = [...state.bonds];
+      const idMap = new Map<string, string>();
+
+      // 创建新原子（带偏移）
+      for (const atom of clipboard.atoms) {
+        const newId = genId();
+        idMap.set(atom.id, newId);
+        newAtoms.push({
+          id: newId,
+          symbol: atom.symbol,
+          x: atom.x + offsetX,
+          y: atom.y + offsetY,
+        });
+      }
+
+      // 创建新键
+      for (const bond of clipboard.bonds) {
+        const newFrom = idMap.get(bond.from);
+        const newTo = idMap.get(bond.to);
+        if (newFrom && newTo) {
+          newBonds.push({
+            id: genBondId(),
+            from: newFrom,
+            to: newTo,
+            type: bond.type,
+            stereo: bond.stereo,
+          });
+        }
+      }
+
+      return { atoms: newAtoms, bonds: newBonds, ...histUpdate };
+    });
+  },
+
+  // 15. Lewis 结构
+  getLewisStructure: () => {
+    const { atoms, bonds } = get();
+    if (atoms.length === 0) return [];
+
+    const result: { atomId: string; lonePairs: number; bondingElectrons: number }[] = [];
+
+    for (const atom of atoms) {
+      const valence = VALENCE_ELECTRONS[atom.symbol] || 0;
+      const usedBonds = getUsedBonds(atom.id, bonds);
+      const bondingElectrons = usedBonds * 2;
+
+      // 孤对电子数 = (价电子 - 键合电子) / 2
+      const formalCharge = get().getFormalCharge(atom.id);
+      const adjustedValence = valence - formalCharge;
+      const lonePairElectrons = Math.max(0, adjustedValence - usedBonds);
+      const lonePairs = Math.floor(lonePairElectrons / 2);
+
+      result.push({
+        atomId: atom.id,
+        lonePairs,
+        bondingElectrons,
+      });
+    }
+
+    return result;
+  },
+
+  // 16. 切换主题
+  toggleTheme: () => {
+    set(state => ({
+      theme: state.theme === 'dark' ? 'light' : 'dark',
+    }));
+  },
+
+  // 17. 设置语言
+  setLanguage: (lang: 'zh' | 'en') => {
+    set({ language: lang });
+  },
+}));
