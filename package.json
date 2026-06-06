@@ -1,14 +1,49 @@
 {
-  "name": "workspace",
+  "name": "sy-organic-chemistry",
+  "productName": "Sy Organic Chemistry",
+  "description": "有机化学分子构建与展示工具",
+  "version": "1.0.0",
+  "author": "Shiyuan",
+  "license": "MIT",
   "private": true,
-  "version": "0.0.0",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "check": "tsc -b --noEmit"
+    "check": "tsc -b --noEmit",
+    "electron:start": "npm run build && electron .",
+    "electron:build": "npm run build && electron-builder --win",
+    "electron:build:all": "npm run build && electron-builder --win --mac --linux"
+  },
+  "build": {
+    "appId": "com.shiyuan.sy-organic-chemistry",
+    "productName": "Sy Organic Chemistry",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "public/favicon.svg"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "public/favicon.svg"
+    }
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -27,6 +62,8 @@
     "@vitejs/plugin-react": "^4.4.1",
     "autoprefixer": "^10.4.21",
     "babel-plugin-react-dev-locator": "^1.0.0",
+    "electron": "^42.3.3",
+    "electron-builder": "^26.15.0",
     "eslint": "^9.25.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.19",
