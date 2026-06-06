@@ -5,6 +5,21 @@ import { ELEMENT_MAP } from '@/data/elements';
 const ATOM_RADIUS = 22;
 const BOND_HIT_DISTANCE = 8;
 
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
+  size: number;
+  color: string;
+  type: 'fire' | 'sparkle' | 'connect' | 'droplet';
+  targetX?: number;
+  targetY?: number;
+  progress?: number;
+}
+
 export default function MoleculeCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -20,6 +35,8 @@ export default function MoleculeCanvas() {
   const draggingAtomId = useChemStore(s => s.draggingAtomId);
   const operationEffect = useChemStore(s => s.operationEffect);
   const pendingElement = useChemStore(s => s.pendingElement);
+  const getHybridization = useChemStore(s => s.getHybridization);
+  const getChiralCenters = useChemStore(s => s.getChiralCenters);
 
   const addAtom = useChemStore(s => s.addAtom);
   const addFunctionalGroup = useChemStore(s => s.addFunctionalGroup);
@@ -36,6 +53,292 @@ export default function MoleculeCanvas() {
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0 });
   const offsetStart = useRef({ x: 0, y: 0 });
+
+  // Long press detection for touch
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressAtomId = useRef<string | null>(null);
+  const [longPressActive, setLongPressActive] = useState(false);
+  const [longPressTargetId, setLongPressTargetId] = useState<string | null>(null);
+
+  // Particles for reaction animation
+  const particlesRef = useRef<Particle[]>([]);
+  const lastEffectTimestamp = useRef<number>(0);
+
+  // ===== Export PNG =====
+  const exportPNG = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const currentAtoms = useChemStore.getState().atoms;
+    const currentBonds = useChemStore.getState().bonds;
+    if (currentAtoms.length === 0) return;
+
+    // Calculate bounding box of all atoms
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const atom of currentAtoms) {
+      minX = Math.min(minX, atom.x);
+      minY = Math.min(minY, atom.y);
+      maxX = Math.max(maxX, atom.x);
+      maxY = Math.max(maxY, atom.y);
+    }
+
+    const padding = 60;
+    const molWidth = maxX - minX + padding * 2;
+    const molHeight = maxY - minY + padding * 2;
+
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = molWidth * 2;
+    tmpCanvas.height = molHeight * 2;
+    const ctx = tmpCanvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.scale(2, 2);
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(0, 0, molWidth, molHeight);
+
+    const offsetX = -minX + padding;
+    const offsetY = -minY + padding;
+
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+
+    // Draw bonds
+    for (const bond of currentBonds) {
+      const fromAtom = currentAtoms.find(a => a.id === bond.from);
+      const toAtom = currentAtoms.find(a => a.id === bond.to);
+      if (!fromAtom || !toAtom) continue;
+
+      const dx = toAtom.x - fromAtom.x;
+      const dy = toAtom.y - fromAtom.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len === 0) continue;
+
+      const nx = -dy / len;
+      const ny = dx / len;
+
+      ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)';
+      ctx.lineWidth = 2;
+
+      if (bond.type === 1) {
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x, fromAtom.y);
+        ctx.lineTo(toAtom.x, toAtom.y);
+        ctx.stroke();
+      } else if (bond.type === 2) {
+        const offset = 4;
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x + nx * offset, fromAtom.y + ny * offset);
+        ctx.lineTo(toAtom.x + nx * offset, toAtom.y + ny * offset);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x - nx * offset, fromAtom.y - ny * offset);
+        ctx.lineTo(toAtom.x - nx * offset, toAtom.y - ny * offset);
+        ctx.stroke();
+      } else if (bond.type === 3) {
+        const offset = 5;
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x, fromAtom.y);
+        ctx.lineTo(toAtom.x, toAtom.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x + nx * offset, fromAtom.y + ny * offset);
+        ctx.lineTo(toAtom.x + nx * offset, toAtom.y + ny * offset);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(fromAtom.x - nx * offset, fromAtom.y - ny * offset);
+        ctx.lineTo(toAtom.x - nx * offset, toAtom.y - ny * offset);
+        ctx.stroke();
+      }
+    }
+
+    // Draw atoms
+    for (const atom of currentAtoms) {
+      const element = ELEMENT_MAP.get(atom.symbol);
+      if (!element) continue;
+      const radius = ATOM_RADIUS;
+
+      const gradient = ctx.createRadialGradient(
+        atom.x - radius * 0.3, atom.y - radius * 0.3, radius * 0.1,
+        atom.x, atom.y, radius
+      );
+      gradient.addColorStop(0, lightenColor(element.color, 60));
+      gradient.addColorStop(0.7, element.color);
+      gradient.addColorStop(1, darkenColor(element.color, 40));
+
+      ctx.beginPath();
+      ctx.arc(atom.x, atom.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = gradient;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = getContrastColor(element.color);
+      ctx.font = `bold ${atom.symbol.length > 1 ? 11 : 14}px Orbitron, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(atom.symbol, atom.x, atom.y);
+    }
+
+    ctx.restore();
+
+    const dataURL = tmpCanvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.download = 'molecule.png';
+    link.href = dataURL;
+    link.click();
+  }, []);
+
+  // ===== Export SVG =====
+  const exportSVG = useCallback(() => {
+    const currentAtoms = useChemStore.getState().atoms;
+    const currentBonds = useChemStore.getState().bonds;
+    if (currentAtoms.length === 0) return;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const atom of currentAtoms) {
+      minX = Math.min(minX, atom.x);
+      minY = Math.min(minY, atom.y);
+      maxX = Math.max(maxX, atom.x);
+      maxY = Math.max(maxY, atom.y);
+    }
+
+    const padding = 60;
+    const svgW = maxX - minX + padding * 2;
+    const svgH = maxY - minY + padding * 2;
+    const offsetX = -minX + padding;
+    const offsetY = -minY + padding;
+
+    const lines: string[] = [];
+    lines.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`);
+    lines.push(`<rect width="${svgW}" height="${svgH}" fill="#0a0a0a"/>`);
+    lines.push(`<g transform="translate(${offsetX},${offsetY})">`);
+
+    // Bonds
+    for (const bond of currentBonds) {
+      const fromAtom = currentAtoms.find(a => a.id === bond.from);
+      const toAtom = currentAtoms.find(a => a.id === bond.to);
+      if (!fromAtom || !toAtom) continue;
+
+      const dx = toAtom.x - fromAtom.x;
+      const dy = toAtom.y - fromAtom.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len === 0) continue;
+
+      const nx = -dy / len;
+      const ny = dx / len;
+      const stroke = 'rgba(200, 200, 200, 0.8)';
+      const sw = 2;
+
+      if (bond.type === 1) {
+        lines.push(`<line x1="${fromAtom.x}" y1="${fromAtom.y}" x2="${toAtom.x}" y2="${toAtom.y}" stroke="${stroke}" stroke-width="${sw}"/>`);
+      } else if (bond.type === 2) {
+        const off = 4;
+        lines.push(`<line x1="${fromAtom.x + nx * off}" y1="${fromAtom.y + ny * off}" x2="${toAtom.x + nx * off}" y2="${toAtom.y + ny * off}" stroke="${stroke}" stroke-width="${sw}"/>`);
+        lines.push(`<line x1="${fromAtom.x - nx * off}" y1="${fromAtom.y - ny * off}" x2="${toAtom.x - nx * off}" y2="${toAtom.y - ny * off}" stroke="${stroke}" stroke-width="${sw}"/>`);
+      } else if (bond.type === 3) {
+        const off = 5;
+        lines.push(`<line x1="${fromAtom.x}" y1="${fromAtom.y}" x2="${toAtom.x}" y2="${toAtom.y}" stroke="${stroke}" stroke-width="${sw}"/>`);
+        lines.push(`<line x1="${fromAtom.x + nx * off}" y1="${fromAtom.y + ny * off}" x2="${toAtom.x + nx * off}" y2="${toAtom.y + ny * off}" stroke="${stroke}" stroke-width="${sw}"/>`);
+        lines.push(`<line x1="${fromAtom.x - nx * off}" y1="${fromAtom.y - ny * off}" x2="${toAtom.x - nx * off}" y2="${toAtom.y - ny * off}" stroke="${stroke}" stroke-width="${sw}"/>`);
+      }
+    }
+
+    // Atoms
+    for (const atom of currentAtoms) {
+      const element = ELEMENT_MAP.get(atom.symbol);
+      if (!element) continue;
+      const r = ATOM_RADIUS;
+      const textColor = getContrastColor(element.color);
+      const fontSize = atom.symbol.length > 1 ? 11 : 14;
+      lines.push(`<circle cx="${atom.x}" cy="${atom.y}" r="${r}" fill="${element.color}" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>`);
+      lines.push(`<text x="${atom.x}" y="${atom.y}" text-anchor="middle" dominant-baseline="central" fill="${textColor}" font-size="${fontSize}" font-weight="bold" font-family="Orbitron, sans-serif">${atom.symbol}</text>`);
+    }
+
+    lines.push('</g>');
+    lines.push('</svg>');
+
+    const svgContent = lines.join('\n');
+    const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.download = 'molecule.svg';
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // ===== Spawn particles for reaction animation =====
+  const spawnParticles = useCallback((type: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
+    const newParticles: Particle[] = [];
+
+    if (type === '加热' || type === '燃烧') {
+      for (let i = 0; i < 40; i++) {
+        newParticles.push({
+          x: Math.random() * w,
+          y: h + Math.random() * 20,
+          vx: (Math.random() - 0.5) * 1.5,
+          vy: -(1 + Math.random() * 3),
+          life: 60 + Math.random() * 40,
+          maxLife: 100,
+          size: 2 + Math.random() * 4,
+          color: Math.random() > 0.5 ? '#ff6600' : '#ff3300',
+          type: 'fire',
+        });
+      }
+    } else if (type === '催化') {
+      for (let i = 0; i < 30; i++) {
+        newParticles.push({
+          x: w / 2 + (Math.random() - 0.5) * w * 0.6,
+          y: h / 2 + (Math.random() - 0.5) * h * 0.6,
+          vx: (Math.random() - 0.5) * 2,
+          vy: (Math.random() - 0.5) * 2,
+          life: 40 + Math.random() * 30,
+          maxLife: 70,
+          size: 1.5 + Math.random() * 2.5,
+          color: Math.random() > 0.5 ? '#66ccff' : '#3399ff',
+          type: 'sparkle',
+        });
+      }
+    } else if (type === '加聚') {
+      for (let i = 0; i < 20; i++) {
+        newParticles.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          vx: 0,
+          vy: 0,
+          life: 60 + Math.random() * 40,
+          maxLife: 100,
+          size: 2,
+          color: '#00ff88',
+          type: 'connect',
+          targetX: w / 2 + (Math.random() - 0.5) * 200,
+          targetY: h / 2 + (Math.random() - 0.5) * 200,
+          progress: 0,
+        });
+      }
+    } else if (type === '水解') {
+      for (let i = 0; i < 25; i++) {
+        newParticles.push({
+          x: w / 2 + (Math.random() - 0.5) * 200,
+          y: h / 2 - 50 + Math.random() * 30,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: 1 + Math.random() * 2,
+          life: 50 + Math.random() * 40,
+          maxLife: 90,
+          size: 3 + Math.random() * 3,
+          color: '#0099ff',
+          type: 'droplet',
+        });
+      }
+    }
+
+    particlesRef.current = [...particlesRef.current, ...newParticles];
+  }, []);
 
   // 绘制画布
   const draw = useCallback(() => {
@@ -120,6 +423,91 @@ export default function MoleculeCanvas() {
         ctx.shadowBlur = 20;
         ctx.fillText(operationEffect.label, 0, 0);
         ctx.restore();
+
+        // Spawn particles when effect starts
+        if (operationEffect.timestamp !== lastEffectTimestamp.current) {
+          lastEffectTimestamp.current = operationEffect.timestamp;
+          spawnParticles(operationEffect.type);
+        }
+      }
+    }
+
+    // ===== Draw particles =====
+    const particles = particlesRef.current;
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.life--;
+      if (p.life <= 0) {
+        particles.splice(i, 1);
+        continue;
+      }
+
+      const lifeRatio = p.life / p.maxLife;
+
+      if (p.type === 'fire') {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vx += (Math.random() - 0.5) * 0.3;
+        ctx.save();
+        ctx.globalAlpha = lifeRatio;
+        ctx.fillStyle = p.color;
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * lifeRatio, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else if (p.type === 'sparkle') {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vx *= 0.98;
+        p.vy *= 0.98;
+        ctx.save();
+        ctx.globalAlpha = lifeRatio;
+        ctx.fillStyle = p.color;
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 12;
+        // Draw a small star/cross shape
+        const s = p.size * lifeRatio;
+        ctx.fillRect(p.x - s, p.y - 0.5, s * 2, 1);
+        ctx.fillRect(p.x - 0.5, p.y - s, 1, s * 2);
+        ctx.restore();
+      } else if (p.type === 'connect') {
+        if (p.progress !== undefined) {
+          p.progress = Math.min(1, (p.progress as number) + 0.02);
+        }
+        ctx.save();
+        ctx.globalAlpha = lifeRatio * 0.6;
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        const prog = (p.progress as number) || 0;
+        const endX = p.x + ((p.targetX || p.x) - p.x) * prog;
+        const endY = p.y + ((p.targetY || p.y) - p.y) * prog;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      } else if (p.type === 'droplet') {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.05; // gravity
+        ctx.save();
+        ctx.globalAlpha = lifeRatio;
+        ctx.fillStyle = p.color;
+        // Draw a teardrop shape
+        const s = p.size * lifeRatio;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y + s * 0.3, s * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y - s);
+        ctx.quadraticCurveTo(p.x + s * 0.5, p.y, p.x, p.y + s * 0.3);
+        ctx.quadraticCurveTo(p.x - s * 0.5, p.y, p.x, p.y - s);
+        ctx.fill();
+        ctx.restore();
       }
     }
 
@@ -127,6 +515,9 @@ export default function MoleculeCanvas() {
     ctx.save();
     ctx.translate(canvasOffset.x, canvasOffset.y);
     ctx.scale(canvasScale, canvasScale);
+
+    // Get chiral centers
+    const chiralCenterIds = getChiralCenters();
 
     // 绘制化学键
     for (const bond of bonds) {
@@ -229,6 +620,7 @@ export default function MoleculeCanvas() {
 
       const isSelected = atom.id === selectedAtomId;
       const isDragging = atom.id === draggingAtomId;
+      const isLongPressed = longPressActive && atom.id === longPressTargetId;
       const radius = ATOM_RADIUS;
 
       if (isSelected || isDragging) {
@@ -246,9 +638,17 @@ export default function MoleculeCanvas() {
         atom.x - radius * 0.3, atom.y - radius * 0.3, radius * 0.1,
         atom.x, atom.y, radius
       );
-      gradient.addColorStop(0, lightenColor(element.color, 60));
-      gradient.addColorStop(0.7, element.color);
-      gradient.addColorStop(1, darkenColor(element.color, 40));
+
+      // Long press visual feedback: atom turns red
+      if (isLongPressed) {
+        gradient.addColorStop(0, lightenColor('#ff3333', 60));
+        gradient.addColorStop(0.7, '#ff3333');
+        gradient.addColorStop(1, darkenColor('#ff3333', 40));
+      } else {
+        gradient.addColorStop(0, lightenColor(element.color, 60));
+        gradient.addColorStop(0.7, element.color);
+        gradient.addColorStop(1, darkenColor(element.color, 40));
+      }
 
       ctx.beginPath();
       ctx.arc(atom.x, atom.y, radius, 0, Math.PI * 2);
@@ -259,11 +659,40 @@ export default function MoleculeCanvas() {
       ctx.lineWidth = isSelected ? 2.5 : 1;
       ctx.stroke();
 
-      ctx.fillStyle = getContrastColor(element.color);
+      ctx.fillStyle = isLongPressed ? '#ffffff' : getContrastColor(element.color);
       ctx.font = `bold ${atom.symbol.length > 1 ? 11 : 14}px Orbitron, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(atom.symbol, atom.x, atom.y);
+
+      // ===== Hybridization label for selected atom =====
+      if (isSelected) {
+        const hybridization = getHybridization(atom.id);
+        if (hybridization) {
+          ctx.save();
+          ctx.font = 'bold 10px Orbitron, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = 'rgba(0, 255, 136, 0.85)';
+          ctx.shadowColor = 'rgba(0, 255, 136, 0.5)';
+          ctx.shadowBlur = 4;
+          ctx.fillText(hybridization, atom.x, atom.y + radius + 4);
+          ctx.restore();
+        }
+      }
+
+      // ===== Chiral center marker =====
+      if (chiralCenterIds.includes(atom.id)) {
+        ctx.save();
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffaa00';
+        ctx.shadowColor = '#ffaa00';
+        ctx.shadowBlur = 6;
+        ctx.fillText('✱', atom.x + radius + 6, atom.y - radius - 2);
+        ctx.restore();
+      }
     }
 
     ctx.restore();
@@ -301,8 +730,48 @@ export default function MoleculeCanvas() {
       ctx.fillText('删除', dzX + dzSize / 2 - 2, dzY + dzSize / 2 + 16);
     }
 
+    // ===== Export buttons (screen space, top-right) =====
+    const btnSize = 32;
+    const btnMargin = 8;
+    const btnY = btnMargin;
+
+    // PNG export button
+    const pngBtnX = w - btnSize - btnMargin;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(pngBtnX, btnY, btnSize, btnSize, 6);
+    ctx.fill();
+    ctx.stroke();
+    // Camera/image icon
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.font = '16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📷', pngBtnX + btnSize / 2, btnY + btnSize / 2);
     ctx.restore();
-  }, [atoms, bonds, canvasOffset, canvasScale, selectedAtomId, selectedBondId, draggingAtomId, operationEffect, isDragOver, isOverDeleteZone]);
+
+    // SVG export button
+    const svgBtnX = w - btnSize * 2 - btnMargin * 2;
+    ctx.save();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(svgBtnX, btnY, btnSize, btnSize, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.font = 'bold 10px Orbitron, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('SVG', svgBtnX + btnSize / 2, btnY + btnSize / 2);
+    ctx.restore();
+
+    ctx.restore();
+  }, [atoms, bonds, canvasOffset, canvasScale, selectedAtomId, selectedBondId, draggingAtomId, operationEffect, isDragOver, isOverDeleteZone, getHybridization, getChiralCenters, longPressActive, longPressTargetId, spawnParticles]);
 
   function lightenColor(hex: string, amount: number): string {
     const r = Math.min(255, parseInt(hex.slice(1, 3), 16) + amount);
@@ -414,8 +883,44 @@ export default function MoleculeCanvas() {
     }
   }, [screenToCanvas, addAtom, addFunctionalGroup]);
 
+  // Check if click is on export buttons
+  const isOnExportButton = useCallback((clientX: number, clientY: number): 'png' | 'svg' | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width / dpr;
+    const btnSize = 32;
+    const btnMargin = 8;
+    const btnY = btnMargin;
+
+    const pngBtnX = w - btnSize - btnMargin;
+    const svgBtnX = w - btnSize * 2 - btnMargin * 2;
+
+    if (x >= pngBtnX && x <= pngBtnX + btnSize && y >= btnY && y <= btnY + btnSize) {
+      return 'png';
+    }
+    if (x >= svgBtnX && x <= svgBtnX + btnSize && y >= btnY && y <= btnY + btnSize) {
+      return 'svg';
+    }
+    return null;
+  }, []);
+
   // 鼠标事件处理
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Check export buttons first
+    const exportBtn = isOnExportButton(e.clientX, e.clientY);
+    if (exportBtn === 'png') {
+      exportPNG();
+      return;
+    }
+    if (exportBtn === 'svg') {
+      exportSVG();
+      return;
+    }
+
     // 如果有待放置的元素，先放置
     if (pendingElement) {
       placeElement(pendingElement, e.clientX, e.clientY);
@@ -441,7 +946,7 @@ export default function MoleculeCanvas() {
         offsetStart.current = { ...canvasOffset };
       }
     }
-  }, [pendingElement, placeElement, setPendingElement, screenToCanvas, hitTestAtom, hitTestBond, selectAtom, selectBond, setDraggingAtom, canvasOffset]);
+  }, [pendingElement, placeElement, setPendingElement, screenToCanvas, hitTestAtom, hitTestBond, selectAtom, selectBond, setDraggingAtom, canvasOffset, isOnExportButton, exportPNG, exportSVG]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (isPanning.current) {
@@ -492,6 +997,10 @@ export default function MoleculeCanvas() {
   }, [canvasScale, canvasOffset, setCanvasScale, setCanvasOffset]);
 
   const handleClick = useCallback((e: React.MouseEvent) => {
+    // Check export buttons first
+    const exportBtn = isOnExportButton(e.clientX, e.clientY);
+    if (exportBtn) return;
+
     // 点击放置模式已由 handleMouseDown 处理
     // 这里只处理化学键点击
     const pos = screenToCanvas(e.clientX, e.clientY);
@@ -499,7 +1008,7 @@ export default function MoleculeCanvas() {
     if (hitBond) {
       cycleBondType(hitBond.id);
     }
-  }, [screenToCanvas, hitTestBond, cycleBondType]);
+  }, [screenToCanvas, hitTestBond, cycleBondType, isOnExportButton]);
 
   // 触摸事件处理
   const touchState = useRef<{ lastDist: number; lastCenter: { x: number; y: number } } | null>(null);
@@ -507,6 +1016,17 @@ export default function MoleculeCanvas() {
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     if (e.touches.length === 1) {
       const touch = e.touches[0];
+
+      // Check export buttons
+      const exportBtn = isOnExportButton(touch.clientX, touch.clientY);
+      if (exportBtn === 'png') {
+        exportPNG();
+        return;
+      }
+      if (exportBtn === 'svg') {
+        exportSVG();
+        return;
+      }
 
       // 如果有待放置的元素，放置它
       if (pendingElement) {
@@ -521,12 +1041,36 @@ export default function MoleculeCanvas() {
       if (hitAtom) {
         selectAtom(hitAtom.id);
         setDraggingAtom(hitAtom.id);
+
+        // Start long press timer
+        longPressAtomId.current = hitAtom.id;
+        setLongPressTargetId(hitAtom.id);
+        if (longPressTimer.current) clearTimeout(longPressTimer.current);
+        longPressTimer.current = setTimeout(() => {
+          // Long press triggered - delete the atom
+          if (longPressAtomId.current) {
+            removeAtom(longPressAtomId.current);
+            longPressAtomId.current = null;
+            setLongPressTargetId(null);
+            setLongPressActive(false);
+          }
+        }, 500);
+        setLongPressActive(false);
       } else {
         isPanning.current = true;
         panStart.current = { x: touch.clientX, y: touch.clientY };
         offsetStart.current = { ...canvasOffset };
       }
     } else if (e.touches.length === 2) {
+      // Cancel long press on two-finger touch
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+        longPressTimer.current = null;
+      }
+      longPressAtomId.current = null;
+      setLongPressTargetId(null);
+      setLongPressActive(false);
+
       isPanning.current = false;
       setDraggingAtom(null);
       const dx = e.touches[0].clientX - e.touches[1].clientX;
@@ -539,10 +1083,20 @@ export default function MoleculeCanvas() {
         },
       };
     }
-  }, [pendingElement, placeElement, setPendingElement, screenToCanvas, hitTestAtom, selectAtom, setDraggingAtom, canvasOffset]);
+  }, [pendingElement, placeElement, setPendingElement, screenToCanvas, hitTestAtom, selectAtom, setDraggingAtom, canvasOffset, isOnExportButton, exportPNG, exportSVG, removeAtom]);
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     e.preventDefault();
+
+    // Cancel long press on touch move
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    longPressAtomId.current = null;
+    setLongPressTargetId(null);
+    setLongPressActive(false);
+
     if (e.touches.length === 1) {
       const touch = e.touches[0];
       if (draggingAtomId) {
@@ -591,6 +1145,15 @@ export default function MoleculeCanvas() {
   }, [draggingAtomId, screenToCanvas, moveAtom, canvasScale, canvasOffset, setCanvasScale, setCanvasOffset]);
 
   const handleTouchEnd = useCallback(() => {
+    // Clear long press timer
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    longPressAtomId.current = null;
+    setLongPressTargetId(null);
+    setLongPressActive(false);
+
     if (draggingAtomId && isOverDeleteZone) {
       removeAtom(draggingAtomId);
     }
@@ -631,7 +1194,7 @@ export default function MoleculeCanvas() {
     placeElement(data, e.clientX, e.clientY);
   }, [placeElement]);
 
-  // 键盘删除
+  // 键盘快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -646,10 +1209,49 @@ export default function MoleculeCanvas() {
       if (e.key === 'Escape') {
         setPendingElement(null);
       }
+      // Ctrl+Z: undo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        useChemStore.getState().undo();
+      }
+      // Ctrl+Y or Ctrl+Shift+Z: redo
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        useChemStore.getState().redo();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) {
+        e.preventDefault();
+        useChemStore.getState().redo();
+      }
+      // Ctrl+S: save molecule
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        useChemStore.getState().saveMolecule();
+      }
+      // Ctrl+E: export PNG
+      if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
+        e.preventDefault();
+        exportPNG();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [removeAtom, setPendingElement]);
+  }, [removeAtom, setPendingElement, exportPNG]);
+
+  // Long press visual feedback
+  useEffect(() => {
+    if (!longPressTargetId) {
+      setLongPressActive(false);
+      return;
+    }
+    // After a short delay, show visual feedback before the actual delete
+    const feedbackTimer = setTimeout(() => {
+      if (longPressTargetId) {
+        setLongPressActive(true);
+      }
+    }, 200); // Show red after 200ms, delete at 500ms
+    return () => clearTimeout(feedbackTimer);
+  }, [longPressTargetId]);
 
   // 光标样式
   const cursorClass = pendingElement

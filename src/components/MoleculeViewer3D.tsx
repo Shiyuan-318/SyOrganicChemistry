@@ -26,6 +26,62 @@ const DEFAULT_COVALENT = 0.76;
 
 const SCALE_2D_TO_3D = 0.05; // 2D像素坐标转3D单位
 
+// 创建文字精灵（用于键角和杂化标签显示）
+function createTextSprite(
+  text: string,
+  options: {
+    fontSize?: number;
+    color?: string;
+    opacity?: number;
+    scale?: number;
+  } = {}
+): THREE.Sprite {
+  const { fontSize = 48, color = '#ffffff', opacity = 0.85, scale = 0.4 } = options;
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+  const metrics = ctx.measureText(text);
+  const textWidth = metrics.width;
+
+  canvas.width = Math.ceil(textWidth + 20);
+  canvas.height = Math.ceil(fontSize * 1.4);
+
+  // 重新设置字体（canvas尺寸变化后上下文会重置）
+  ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  ctx.globalAlpha = opacity;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+
+  const spriteMaterial = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+  });
+
+  const sprite = new THREE.Sprite(spriteMaterial);
+  const aspect = canvas.width / canvas.height;
+  sprite.scale.set(scale * aspect, scale, 1);
+
+  return sprite;
+}
+
+// 杂化类型到显示文本的映射
+function hybridizationLabel(hyb: string): string {
+  switch (hyb) {
+    case 'sp': return 'sp';
+    case 'sp2': return 'sp²';
+    case 'sp3': return 'sp³';
+    default: return hyb;
+  }
+}
+
 export default function MoleculeViewer3D() {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -35,9 +91,12 @@ export default function MoleculeViewer3D() {
   const frameRef = useRef<number>(0);
   const [modelType, setModelType] = useState<ModelType>('ballStick');
   const [webglError, setWebglError] = useState(false);
+  const [showAngles, setShowAngles] = useState(false);
+  const [showHybridization, setShowHybridization] = useState(false);
 
   const atoms = useChemStore(s => s.atoms);
   const bonds = useChemStore(s => s.bonds);
+  const getHybridization = useChemStore(s => s.getHybridization);
 
   // 初始化Three.js场景
   useEffect(() => {
@@ -163,6 +222,10 @@ export default function MoleculeViewer3D() {
           child.geometry.dispose();
           if (child.material instanceof THREE.Material) child.material.dispose();
         }
+        if (child instanceof THREE.Sprite) {
+          if (child.material.map) child.material.map.dispose();
+          child.material.dispose();
+        }
       });
     });
 
@@ -179,6 +242,9 @@ export default function MoleculeViewer3D() {
     const atomGroup = new THREE.Group();
     atomGroup.userData.isMolecule = true;
 
+    // 记录每个原子的3D位置，供键角计算使用
+    const atomPositions: Record<string, THREE.Vector3> = {};
+
     for (const atom of atoms) {
       const element = ELEMENT_MAP.get(atom.symbol);
       if (!element) continue;
@@ -189,6 +255,7 @@ export default function MoleculeViewer3D() {
         -(atom.y - cy) * posScale,
         0
       );
+      atomPositions[atom.id] = pos.clone();
 
       let radius: number;
       if (isBallStick) {
@@ -286,6 +353,107 @@ export default function MoleculeViewer3D() {
       scene.add(bondGroup);
     }
 
+    // 键角显示（仅在球棍模型且开启时显示）
+    if (isBallStick && showAngles) {
+      const angleGroup = new THREE.Group();
+      angleGroup.userData.isMolecule = true;
+
+      // 构建每个原子的邻接键列表
+      const atomBondNeighbors: Record<string, string[]> = {};
+      for (const bond of bonds) {
+        if (!atomBondNeighbors[bond.from]) atomBondNeighbors[bond.from] = [];
+        if (!atomBondNeighbors[bond.to]) atomBondNeighbors[bond.to] = [];
+        atomBondNeighbors[bond.from].push(bond.to);
+        atomBondNeighbors[bond.to].push(bond.from);
+      }
+
+      for (const atom of atoms) {
+        const neighbors = atomBondNeighbors[atom.id];
+        if (!neighbors || neighbors.length < 2 || neighbors.length > 4) continue;
+
+        const centerPos = atomPositions[atom.id];
+        if (!centerPos) continue;
+
+        // 计算所有键对之间的角度
+        const angles: { angle: number; midDir: THREE.Vector3 }[] = [];
+        for (let i = 0; i < neighbors.length; i++) {
+          for (let j = i + 1; j < neighbors.length; j++) {
+            const posA = atomPositions[neighbors[i]];
+            const posB = atomPositions[neighbors[j]];
+            if (!posA || !posB) continue;
+
+            const dirA = new THREE.Vector3().subVectors(posA, centerPos).normalize();
+            const dirB = new THREE.Vector3().subVectors(posB, centerPos).normalize();
+
+            const dot = THREE.MathUtils.clamp(dirA.dot(dirB), -1, 1);
+            const angleRad = Math.acos(dot);
+            const angleDeg = THREE.MathUtils.radToDeg(angleRad);
+
+            // 文字放在两个键方向的中间方向上，稍微偏移
+            const midDir = new THREE.Vector3().addVectors(dirA, dirB).normalize();
+            if (midDir.length() < 0.01) {
+              midDir.set(0, 1, 0);
+            }
+
+            angles.push({ angle: angleDeg, midDir });
+          }
+        }
+
+        // 为每个角度创建文字精灵
+        for (const { angle, midDir } of angles) {
+          const label = `${angle.toFixed(1)}°`;
+          const sprite = createTextSprite(label, {
+            fontSize: 36,
+            color: '#ffffff',
+            opacity: 0.75,
+            scale: 0.3,
+          });
+
+          // 放在原子位置上方，沿中间方向偏移
+          const atomRadius = (COVALENT_RADII[atom.symbol] || DEFAULT_COVALENT) * 0.5;
+          const offsetDist = atomRadius + 0.35;
+          sprite.position.copy(centerPos).add(midDir.multiplyScalar(offsetDist));
+          sprite.position.y += 0.15; // 稍微向上偏移
+
+          sprite.userData = { isMolecule: true };
+          angleGroup.add(sprite);
+        }
+      }
+
+      scene.add(angleGroup);
+    }
+
+    // 杂化标签显示（仅在球棍模型且开启时显示）
+    if (isBallStick && showHybridization) {
+      const hybGroup = new THREE.Group();
+      hybGroup.userData.isMolecule = true;
+
+      for (const atom of atoms) {
+        const hyb = getHybridization(atom.id);
+        if (!hyb) continue;
+
+        const centerPos = atomPositions[atom.id];
+        if (!centerPos) continue;
+
+        const label = hybridizationLabel(hyb);
+        const sprite = createTextSprite(label, {
+          fontSize: 32,
+          color: '#88ccff',
+          opacity: 0.8,
+          scale: 0.25,
+        });
+
+        const atomRadius = (COVALENT_RADII[atom.symbol] || DEFAULT_COVALENT) * 0.5;
+        sprite.position.copy(centerPos);
+        sprite.position.y -= atomRadius + 0.3; // 放在原子下方
+
+        sprite.userData = { isMolecule: true };
+        hybGroup.add(sprite);
+      }
+
+      scene.add(hybGroup);
+    }
+
     // 自动调整相机距离
     const camera = cameraRef.current;
     const controls = controlsRef.current;
@@ -300,7 +468,7 @@ export default function MoleculeViewer3D() {
       controls.target.set(0, 0, 0);
       controls.update();
     }
-  }, [atoms, bonds, modelType]);
+  }, [atoms, bonds, modelType, showAngles, showHybridization, getHybridization]);
 
   useEffect(() => {
     buildMolecule();
@@ -323,8 +491,8 @@ export default function MoleculeViewer3D() {
     <div className="w-full h-full relative">
       <div ref={containerRef} className="w-full h-full" />
 
-      {/* 模型切换按钮 */}
-      <div className="absolute top-3 left-3 flex gap-1 z-10">
+      {/* 模型切换按钮 & 功能开关 */}
+      <div className="absolute top-3 left-3 flex gap-1 z-10 flex-wrap">
         <button
           onClick={() => setModelType('ballStick')}
           className={`px-3 py-1.5 rounded-lg text-xs font-['Orbitron'] transition-all ${
@@ -345,6 +513,30 @@ export default function MoleculeViewer3D() {
         >
           空间填充
         </button>
+        {modelType === 'ballStick' && (
+          <>
+            <button
+              onClick={() => setShowAngles(v => !v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-['Orbitron'] transition-all ${
+                showAngles
+                  ? 'bg-chem-accent/20 text-chem-accent border border-chem-accent/40'
+                  : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white hover:border-white/20'
+              }`}
+            >
+              键角
+            </button>
+            <button
+              onClick={() => setShowHybridization(v => !v)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-['Orbitron'] transition-all ${
+                showHybridization
+                  ? 'bg-chem-accent/20 text-chem-accent border border-chem-accent/40'
+                  : 'bg-white/5 text-gray-400 border border-white/10 hover:text-white hover:border-white/20'
+              }`}
+            >
+              杂化
+            </button>
+          </>
+        )}
       </div>
 
       {/* 操作提示 */}
