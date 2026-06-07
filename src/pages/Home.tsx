@@ -11,11 +11,13 @@ import {
   FlaskConical, Menu, Box, Pen, BookOpen, Plus, X,
   Save, FolderOpen, Trash2, Undo2, Redo2, HelpCircle,
   Sun, Moon, Languages, FileInput, Activity, Layers, Copy,
+  ChevronDown, ChevronUp,
 } from 'lucide-react';
 
 export default function Home() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'2d' | '3d' | 'split'>('split');
+  const [infoBarCollapsed, setInfoBarCollapsed] = useState(false);
 
   // Preset dropdown
   const [presetOpen, setPresetOpen] = useState(false);
@@ -607,13 +609,28 @@ export default function Home() {
       </div>
 
       {/* 底部信息栏和操作栏 */}
-      <div className="flex flex-col sm:flex-row">
-        <div className="flex-1 min-w-0">
-          <InfoBar />
-        </div>
-        <div className="sm:w-auto flex-shrink-0">
-          <OperationBar />
-        </div>
+      <div className="flex flex-col">
+        {/* 收起/展开按钮 */}
+        <button
+          onClick={() => setInfoBarCollapsed(!infoBarCollapsed)}
+          className="w-full flex items-center justify-center py-0.5 bg-chem-panel/60 hover:bg-chem-panel/80 border-t border-chem-accent/10 transition-colors"
+        >
+          {infoBarCollapsed ? (
+            <ChevronUp size={12} className="text-gray-500" />
+          ) : (
+            <ChevronDown size={12} className="text-gray-500" />
+          )}
+        </button>
+        {!infoBarCollapsed && (
+          <div className="flex flex-col sm:flex-row">
+            <div className="flex-1 min-w-0">
+              <InfoBar />
+            </div>
+            <div className="sm:w-auto flex-shrink-0">
+              <OperationBar />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* SMILES Dialog */}
