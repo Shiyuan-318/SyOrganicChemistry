@@ -214,7 +214,7 @@ export default function Home() {
   }, [language, showToast]);
 
   return (
-    <div className={`h-screen w-screen flex flex-col bg-chem-bg overflow-hidden ${theme === 'light' ? 'theme-light' : ''}`} style={{ minHeight: '100dvh' }}>
+    <div className={`fixed inset-0 flex flex-col bg-chem-bg overflow-hidden ${theme === 'light' ? 'theme-light' : ''}`}>
       {/* 顶部标题栏 */}
       <header className="flex items-center justify-between px-4 py-2 bg-chem-panel/80 backdrop-blur-xl border-b border-chem-accent/10 z-50">
         <div className="flex items-center gap-2">
@@ -517,10 +517,10 @@ export default function Home() {
 
       {/* 主体区域 */}
       <div className="flex-1 flex overflow-hidden min-h-0">
-        <div className={`relative ${viewMode === '3d' ? 'hidden' : viewMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
+        <div className={`h-full ${viewMode === '3d' ? 'hidden' : viewMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
           <MoleculeCanvas />
         </div>
-        <div className={`relative border-l border-chem-accent/10 ${viewMode === '2d' ? 'hidden' : viewMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
+        <div className={`h-full border-l border-chem-accent/10 ${viewMode === '2d' ? 'hidden' : viewMode === 'split' ? 'w-1/2' : 'flex-1'}`}>
           <MoleculeViewer3D />
         </div>
         <ElementPanel isOpen={panelOpen} onToggle={() => setPanelOpen(false)} />

@@ -121,8 +121,8 @@ export default function InfoBar() {
   };
 
   return (
-    <div className="bg-chem-panel/90 backdrop-blur-xl border-t border-chem-accent/10 px-4 py-2.5">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
+    <div className="bg-chem-panel/90 backdrop-blur-xl border-t border-chem-accent/10 px-4 py-2 overflow-x-auto">
+      <div className="flex items-center gap-x-4 gap-y-1 min-w-max">
         {/* 分子式 */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-gray-500 font-['Orbitron'] tracking-wider">{t('info.molecularFormula', language)}</span>
