@@ -214,7 +214,7 @@ export default function Home() {
   }, [language, showToast]);
 
   return (
-    <div className={`fixed inset-0 flex flex-col bg-chem-bg overflow-hidden ${theme === 'light' ? 'theme-light' : ''}`}>
+    <div className={`h-full w-full flex flex-col bg-chem-bg overflow-hidden ${theme === 'light' ? 'theme-light' : ''}`}>
       {/* 顶部标题栏 */}
       <header className="flex items-center justify-between px-4 py-2 bg-chem-panel/80 backdrop-blur-xl border-b border-chem-accent/10 z-50">
         <div className="flex items-center gap-2">
