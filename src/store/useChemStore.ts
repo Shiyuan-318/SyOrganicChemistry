@@ -1202,6 +1202,43 @@ export const useChemStore = create<ChemState>((set, get) => ({
     const { atoms, bonds } = get();
     if (atoms.length === 0) return '';
 
+    // 检测环状结构
+    const simpleAdj = new Map<string, string[]>();
+    for (const atom of atoms) {
+      simpleAdj.set(atom.id, []);
+    }
+    for (const bond of bonds) {
+      simpleAdj.get(bond.from)?.push(bond.to);
+      simpleAdj.get(bond.to)?.push(bond.from);
+    }
+
+    const ringVisited = new Set<string>();
+    let hasRing = false;
+
+    function detectRings(atomId: string, parentId: string | null): void {
+      ringVisited.add(atomId);
+      const neighbors = simpleAdj.get(atomId) || [];
+      for (const neighborId of neighbors) {
+        if (!ringVisited.has(neighborId)) {
+          detectRings(neighborId, atomId);
+        } else if (neighborId !== parentId) {
+          hasRing = true;
+        }
+      }
+    }
+
+    for (const atom of atoms) {
+      if (!ringVisited.has(atom.id)) {
+        detectRings(atom.id, null);
+      }
+    }
+
+    // 环状分子回退到分子式
+    if (hasRing) {
+      return get().getMolecularFormula();
+    }
+
+    // 非环状分子：DFS 生成结构简式
     const visited = new Set<string>();
     const parts: string[] = [];
 
@@ -1224,11 +1261,11 @@ export const useChemStore = create<ChemState>((set, get) => ({
           )
         : null;
 
-      let prefix = '';
+      let bondPrefix = '';
       if (bondToParent) {
-        if (bondToParent.type === 2) prefix = '=';
-        else if (bondToParent.type === 3) prefix = '≡';
-        else prefix = '-';
+        if (bondToParent.type === 2) bondPrefix = '=';
+        else if (bondToParent.type === 3) bondPrefix = '≡';
+        // 单键不加前缀
       }
 
       // 找非 H 的子节点
@@ -1243,62 +1280,38 @@ export const useChemStore = create<ChemState>((set, get) => ({
         return n && n.symbol === 'H';
       });
 
-      // 如果没有非 H 邻居，显示原子符号+氢
+      const hCount = hNeighbors.length;
+
+      // 氢原子字符串
+      const hStr = hCount === 0 ? '' : hCount === 1 ? 'H' : hCount === 2 ? 'H₂' : hCount === 3 ? 'H₃' : `H${hCount}`;
+
+      // 没有非 H 邻居：末端原子
       if (nonHNeighbors.length === 0) {
-        const hCount = hNeighbors.length;
-        // 碳原子省略自身（因为它总是与父原子相连），只显示氢
         if (atom.symbol === 'C') {
-          if (hCount === 0) return prefix;
-          if (hCount === 1) return `${prefix}CH`;
-          if (hCount === 2) return `${prefix}CH₂`;
-          if (hCount === 3) return `${prefix}CH₃`;
-          return `${prefix}CH${hCount}`;
+          return `${bondPrefix}C${hStr}`;
         }
-        // 其他原子显示自身 + 氢
-        if (hCount === 0) return `${prefix}${atom.symbol}`;
-        if (hCount === 1) return `${prefix}${atom.symbol}H`;
-        if (hCount === 2) return `${prefix}${atom.symbol}H₂`;
-        return `${prefix}${atom.symbol}H${hCount}`;
+        return `${bondPrefix}${atom.symbol}${hStr}`;
       }
 
-      // 只有一个非 H 邻居：线性链，不用括号
+      // 只有一个非 H 邻居：线性链
       if (nonHNeighbors.length === 1) {
         const childResult = dfs(nonHNeighbors[0], atomId);
-        const hCount = hNeighbors.length;
-        let hStr = '';
         if (atom.symbol === 'C') {
-          if (hCount === 1) hStr = 'H';
-          else if (hCount === 2) hStr = 'H₂';
-          else if (hCount >= 3) hStr = `H${hCount}`;
-        } else {
-          if (hCount === 1) hStr = 'H';
-          else if (hCount === 2) hStr = 'H₂';
-          else if (hCount >= 3) hStr = `H${hCount}`;
+          return `${bondPrefix}C${hStr}${childResult}`;
         }
-
-        // 碳原子在链中可省略
-        if (atom.symbol === 'C') {
-          return `${prefix}${hStr}${childResult}`;
-        }
-        return `${prefix}${atom.symbol}${hStr}${childResult}`;
+        return `${bondPrefix}${atom.symbol}${hStr}${childResult}`;
       }
 
       // 多个非 H 邻居：分支结构，用括号
       const childResults = nonHNeighbors.map(id => dfs(id, atomId)).filter(Boolean);
       if (childResults.length === 0) {
-        return `${prefix}${atom.symbol}`;
+        return `${bondPrefix}${atom.symbol}`;
       }
-
-      const hCount = hNeighbors.length;
-      let hStr = '';
-      if (hCount === 1) hStr = 'H';
-      else if (hCount === 2) hStr = 'H₂';
-      else if (hCount >= 3) hStr = `H${hCount}`;
 
       if (atom.symbol === 'C') {
-        return `${prefix}C${hStr}(${childResults.join(')(')})`;
+        return `${bondPrefix}C${hStr}(${childResults.join(')(')})`;
       }
-      return `${prefix}${atom.symbol}${hStr}(${childResults.join(')(')})`;
+      return `${bondPrefix}${atom.symbol}${hStr}(${childResults.join(')(')})`;
     }
 
     for (const atom of atoms) {
@@ -1319,11 +1332,6 @@ export const useChemStore = create<ChemState>((set, get) => ({
       counts[atom.symbol] = (counts[atom.symbol] || 0) + 1;
     }
 
-    const hasDouble = bonds.some(b => b.type === 2);
-    const hasTriple = bonds.some(b => b.type === 3);
-    const hasOxygen = counts['O'] > 0;
-    const hasNitrogen = counts['N'] > 0;
-    const hasOH = atoms.some(a => a.symbol === 'O') && atoms.some(a => a.symbol === 'H');
     const carbonCount = counts['C'] || 0;
 
     // 简化命名规则
@@ -1345,21 +1353,108 @@ export const useChemStore = create<ChemState>((set, get) => ({
         .join('化');
     }
 
-    if (hasOxygen && hasOH) {
-      if (bonds.some(b => b.type === 2)) {
-        // 检查是否有羧基模式
-        return `${prefix}酸`;
-      }
+    // 构建邻接表用于键检测
+    const adj = new Map<string, { neighborId: string; bondType: 1 | 2 | 3 }[]>();
+    for (const atom of atoms) {
+      adj.set(atom.id, []);
+    }
+    for (const bond of bonds) {
+      adj.get(bond.from)?.push({ neighborId: bond.to, bondType: bond.type });
+      adj.get(bond.to)?.push({ neighborId: bond.from, bondType: bond.type });
+    }
+
+    // 检测实际的 O-H 键（不是 O 和 H 原子共存）
+    const hasOHBond = bonds.some(b => {
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      if (!fromAtom || !toAtom) return false;
+      return (fromAtom.symbol === 'O' && toAtom.symbol === 'H') ||
+             (fromAtom.symbol === 'H' && toAtom.symbol === 'O');
+    });
+
+    // 检测 C=O 键
+    const hasCdoubleO = bonds.some(b => {
+      if (b.type !== 2) return false;
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      if (!fromAtom || !toAtom) return false;
+      return (fromAtom.symbol === 'C' && toAtom.symbol === 'O') ||
+             (fromAtom.symbol === 'O' && toAtom.symbol === 'C');
+    });
+
+    // 检测羧基：同一个 C 上有 C=O 和 C-OH
+    const isCarboxylicAcid = atoms.some(a => {
+      if (a.symbol !== 'C') return false;
+      const neighbors = adj.get(a.id) || [];
+      const hasDoubleO = neighbors.some(n => {
+        const na = atoms.find(x => x.id === n.neighborId);
+        return na && na.symbol === 'O' && n.bondType === 2;
+      });
+      const hasSingleOH = neighbors.some(n => {
+        const na = atoms.find(x => x.id === n.neighborId);
+        if (!na || na.symbol !== 'O' || n.bondType !== 1) return false;
+        const oNeighbors = adj.get(na.id) || [];
+        return oNeighbors.some(on => {
+          const oa = atoms.find(x => x.id === on.neighborId);
+          return oa && oa.symbol === 'H';
+        });
+      });
+      return hasDoubleO && hasSingleOH;
+    });
+
+    // 检测醛基：C=O 且该 C 上有 C-H 键
+    const isAldehyde = bonds.some(b => {
+      if (b.type !== 2) return false;
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      if (!fromAtom || !toAtom) return false;
+      const cAtom = fromAtom.symbol === 'C' ? fromAtom : (toAtom.symbol === 'C' ? toAtom : null);
+      if (!cAtom) return false;
+      const cNeighbors = adj.get(cAtom.id) || [];
+      return cNeighbors.some(n => {
+        const na = atoms.find(a => a.id === n.neighborId);
+        return na && na.symbol === 'H';
+      });
+    });
+
+    // 检测酮基：C=O 且该 C 上没有 H
+    const isKetone = bonds.some(b => {
+      if (b.type !== 2) return false;
+      const fromAtom = atoms.find(a => a.id === b.from);
+      const toAtom = atoms.find(a => a.id === b.to);
+      if (!fromAtom || !toAtom) return false;
+      const cAtom = fromAtom.symbol === 'C' ? fromAtom : (toAtom.symbol === 'C' ? toAtom : null);
+      if (!cAtom) return false;
+      const cNeighbors = adj.get(cAtom.id) || [];
+      const hasH = cNeighbors.some(n => {
+        const na = atoms.find(a => a.id === n.neighborId);
+        return na && na.symbol === 'H';
+      });
+      return !hasH;
+    });
+
+    const hasNitrogen = counts['N'] > 0;
+    const hasDouble = bonds.some(b => b.type === 2);
+    const hasTriple = bonds.some(b => b.type === 3);
+
+    // 分类逻辑（按优先级）
+    if (isCarboxylicAcid) {
+      return `${prefix}酸`;
+    }
+
+    if (hasOHBond && !hasCdoubleO) {
       return `${prefix}醇`;
     }
 
-    if (hasOxygen) {
-      if (hasDouble) return `${prefix}醛`;
+    if (hasCdoubleO && isAldehyde) {
+      return `${prefix}醛`;
+    }
+
+    if (hasCdoubleO && isKetone) {
       return `${prefix}酮`;
     }
 
     if (hasNitrogen) return `${prefix}胺`;
-
     if (hasTriple) return `${prefix}炔`;
     if (hasDouble) return `${prefix}烯`;
     return `${prefix}烷`;

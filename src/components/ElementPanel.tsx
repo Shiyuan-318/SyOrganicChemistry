@@ -88,7 +88,7 @@ export default function ElementPanel({ isOpen, onToggle }: ElementPanelProps) {
 
       <div
         className={`
-          fixed md:relative z-40
+          fixed md:absolute md:right-0 z-40
           top-0 right-0 h-full
           w-72 md:w-80
           bg-chem-panel/95 backdrop-blur-xl
