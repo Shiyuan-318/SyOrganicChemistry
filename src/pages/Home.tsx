@@ -75,6 +75,11 @@ export default function Home() {
   const getSMILES = useChemStore(s => s.getSMILES);
   const importSMILES = useChemStore(s => s.importSMILES);
   const getResonanceStructures = useChemStore(s => s.getResonanceStructures);
+  const getMolecularFormula = useChemStore(s => s.getMolecularFormula);
+  const getStructuralFormula = useChemStore(s => s.getStructuralFormula);
+  const getChineseName = useChemStore(s => s.getChineseName);
+  const atoms = useChemStore(s => s.atoms);
+  const bonds = useChemStore(s => s.bonds);
 
   const canUndo = historyIndex > 0;
   const canRedo = historyIndex < history.length - 1;
@@ -610,17 +615,6 @@ export default function Home() {
 
       {/* 底部信息栏和操作栏 */}
       <div className="flex flex-col">
-        {/* 收起/展开按钮 */}
-        <button
-          onClick={() => setInfoBarCollapsed(!infoBarCollapsed)}
-          className="w-full flex items-center justify-center py-0.5 bg-chem-panel/60 hover:bg-chem-panel/80 border-t border-chem-accent/10 transition-colors"
-        >
-          {infoBarCollapsed ? (
-            <ChevronUp size={12} className="text-gray-500" />
-          ) : (
-            <ChevronDown size={12} className="text-gray-500" />
-          )}
-        </button>
         {!infoBarCollapsed && (
           <div className="flex flex-col sm:flex-row">
             <div className="flex-1 min-w-0">
@@ -631,6 +625,40 @@ export default function Home() {
             </div>
           </div>
         )}
+        {/* 底部收起条 — 始终显示一行简略信息 */}
+        <button
+          onClick={() => setInfoBarCollapsed(!infoBarCollapsed)}
+          className="w-full flex items-center justify-between px-4 py-1 bg-chem-panel/80 border-t border-chem-accent/10 hover:bg-chem-panel/60 transition-colors"
+        >
+          <div className="flex items-center gap-4 text-xs min-w-0">
+            {atoms.length > 0 ? (
+              <>
+                <span className="text-chem-accent font-['Orbitron'] whitespace-nowrap">
+                  {getMolecularFormula()}
+                </span>
+                <span className="text-gray-500 hidden sm:inline">|</span>
+                <span className="text-gray-400 font-mono truncate hidden sm:inline">
+                  {getStructuralFormula()}
+                </span>
+                <span className="text-gray-500 hidden sm:inline">|</span>
+                <span className="text-white/70 font-['Noto_Sans_SC'] truncate hidden sm:inline">
+                  {getChineseName()}
+                </span>
+                <span className="text-gray-500 hidden xs:inline">|</span>
+                <span className="text-gray-500 whitespace-nowrap">
+                  原子:<span className="text-gray-300">{atoms.length}</span> 键:<span className="text-gray-300">{bonds.length}</span>
+                </span>
+              </>
+            ) : (
+              <span className="text-gray-600">Sy Organic Chemistry</span>
+            )}
+          </div>
+          {infoBarCollapsed ? (
+            <ChevronUp size={14} className="text-gray-500 flex-shrink-0 ml-2" />
+          ) : (
+            <ChevronDown size={14} className="text-gray-500 flex-shrink-0 ml-2" />
+          )}
+        </button>
       </div>
 
       {/* SMILES Dialog */}
